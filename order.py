@@ -266,7 +266,7 @@ def _pay_logic(cat, df, k):
     conn.commit(); conn.close()
 
 # --- 6. 主頁面 ---
-st.title("🍱 Office Eats")
+st.title("🍱 點餐囉！各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
 
 with tab1:
@@ -349,3 +349,4 @@ with tab1:
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
 with tab3: render_payment_section()
+
