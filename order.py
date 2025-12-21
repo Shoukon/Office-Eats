@@ -69,7 +69,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # 2. 資料庫邏輯 (Robust Database Handling)
 # ==========================================
 DEFAULT_COLLEAGUES = [
-    "小昏", "阿文""
+    "小昏", "阿文"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
@@ -525,3 +525,4 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
+
