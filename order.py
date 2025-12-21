@@ -8,23 +8,18 @@ from datetime import datetime
 # ==========================================
 # 0. 系統設定區
 # ==========================================
-# 管理員密碼 (修改人員/菜單時需要)
 ADMIN_PASSWORD = "0678678"
-# 資料庫檔案名稱
 DB_FILE = "lunch.db"
 
 # ==========================================
-# 1. 頁面設定與 CSS 美化
+# 1. 頁面設定與 CSS
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.4", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.3", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 隱藏 Streamlit 預設選單 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    
-    /* Tabs 樣式優化 */
     .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; }
     .stTabs [data-baseweb="tab"] {
         height: 50px; border-radius: 8px;
@@ -32,8 +27,6 @@ custom_css = """
         padding: 10px 20px; font-weight: 600; border: none; color: var(--text-color);
     }
     .stTabs [aria-selected="true"] { background-color: #FF4B4B !important; color: white !important; }
-    
-    /* 標題裝飾條 */
     .section-header {
         padding: 12px 15px; border-radius: 8px; margin-bottom: 15px;
         color: white; font-weight: bold; font-size: 1.1rem;
@@ -48,14 +41,10 @@ custom_css = """
     .header-food { background: var(--food-gradient); }
     .header-drink { background: var(--drink-gradient); }
     .header-money { background: var(--money-gradient); color: white;}
-    
-    /* 指標卡片背景 */
     div[data-testid="stMetric"] {
         background-color: var(--secondary-background-color);
         border: 1px solid rgba(255, 255, 255, 0.1); padding: 15px; border-radius: 8px;
     }
-    
-    /* 按鈕顏色客製化 */
     div[data-testid="column"]:nth-of-type(1) div[data-testid="stVerticalBlock"] > div.stButton > button[kind="primary"] {
         background: var(--food-gradient); color: white; border: none; transition: opacity 0.3s;
     }
@@ -63,30 +52,15 @@ custom_css = """
         background: var(--drink-gradient); color: white; border: none; transition: opacity 0.3s;
     }
     div.stButton > button[kind="primary"]:hover { opacity: 0.9; border: none !important; }
-
-    /* iPhone 輸入框字體優化 (防止 Zoom In) */
     @media screen and (max-width: 768px) {
-        input, select, textarea {
-            font-size: 16px !important; 
-        }
+        input, select, textarea { font-size: 16px !important; }
     }
-    
-    /* 數量標籤樣式 (x5) */
     .qty-badge {
-        font-size: 1.6rem; 
-        font-weight: 800; 
-        color: #FF4B4B; 
-        text-align: center;
-        line-height: 1.2;
-        border-right: 2px solid rgba(255,255,255,0.1);
-        padding-right: 10px;
-        margin-right: 5px;
+        font-size: 1.6rem; font-weight: 800; color: #FF4B4B; text-align: center;
+        line-height: 1.2; border-right: 2px solid rgba(255,255,255,0.1);
+        padding-right: 10px; margin-right: 5px;
     }
-    
-    /* 自動刷新文字淡化 */
-    .refresh-text {
-        color: gray; font-size: 0.8rem; margin-bottom: 5px;
-    }
+    .refresh-text { color: gray; font-size: 0.8rem; margin-bottom: 5px; }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -153,10 +127,6 @@ def get_db(query, params=()):
         return df
     except Exception: return pd.DataFrame()
 
-def get_db_size():
-    try: return os.path.getsize(DB_FILE) / 1024
-    except FileNotFoundError: return 0
-
 def get_config_list(table, col, cat=None):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     try:
@@ -188,7 +158,7 @@ def update_config_list(table, col, new_df, cat=None):
 
 init_db()
 
-# 讀取最新設定
+# 讀取設定
 df_colleagues = get_config_list("config_colleagues", "name")
 colleagues_list = df_colleagues["name"].tolist() if not df_colleagues.empty else ["請新增人員"]
 df_spicy = get_config_list("config_options", "option_value", "spicy")
@@ -201,11 +171,10 @@ df_tags = get_config_list("config_options", "option_value", "tags")
 custom_tags = df_tags["option_value"].tolist()
 
 # ==========================================
-# 4. 側邊欄
+# 3. 側邊欄
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 開團管理")
-    
     st.subheader("1. 今日店家")
     restaurant_name = st.text_input("主餐店家", "吃什麼？")
     drink_shop_name = st.text_input("飲料店家", "喝什麼？")
@@ -213,22 +182,15 @@ with st.sidebar:
 
     st.subheader("2. 資料重置")
     if "confirm_reset" not in st.session_state: st.session_state.confirm_reset = False
-    
-    if st.button("🗑️ 清空資料庫", type="secondary"): 
-        st.session_state.confirm_reset = True
-    
+    if st.button("🗑️ 清空資料庫", type="secondary"): st.session_state.confirm_reset = True
     if st.session_state.confirm_reset:
-        st.warning("⚠️ 確定清空所有訂單？此動作無法復原。")
+        st.warning("⚠️ 確定清空？此動作無法復原。")
         c1, c2 = st.columns(2)
         if c1.button("✅ 確定"):
-            execute_db("DELETE FROM orders")
-            execute_db("VACUUM")
-            st.session_state.confirm_reset = False
-            st.toast("🗑️ 資料庫已重置完成！")
-            st.rerun()
+            execute_db("DELETE FROM orders"); execute_db("VACUUM")
+            st.session_state.confirm_reset = False; st.toast("🗑️ 資料庫已重置完成！"); st.rerun()
         if c2.button("❌ 取消"):
-            st.session_state.confirm_reset = False
-            st.rerun()
+            st.session_state.confirm_reset = False; st.rerun()
     st.divider()
 
     with st.expander("🔧 進階設定"):
@@ -257,43 +219,34 @@ with st.sidebar:
             render_opt(t2, "ice", get_config_list("config_options", "option_value", "ice"), "冰塊")
             render_opt(t3, "sugar", get_config_list("config_options", "option_value", "sugar"), "甜度")
             render_opt(t4, "tags", get_config_list("config_options", "option_value", "tags"), "標籤")
-        elif pwd_input: 
-            st.error("🚫 密碼錯誤")
-        else: 
-            st.caption("修改人員或菜單需驗證")
+        elif pwd_input: st.error("🚫 密碼錯誤")
+        else: st.caption("修改人員或菜單需驗證")
 
 # ==========================================
-# 5. 統計看板 Fragment
+# 4. 統計看板
 # ==========================================
 @st.fragment(run_every=10)
 def render_stats_section(r_name, d_name):
     st.markdown(f'<div class="refresh-text">🔄 自動刷新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-    
     df_all = get_db("SELECT * FROM orders")
     if df_all.empty: st.info("📦 目前尚無訂單，等待第一筆資料..."); return
 
     def show_stats_optimized(df_source, title, icon_class):
         st.markdown(f'<div class="section-header {icon_class}">{title} ({len(df_source)})</div>', unsafe_allow_html=True)
         if df_source.empty: st.caption("無資料"); return
-        
         c_sum, c_det = st.columns([1, 1.2])
-        
         with c_sum:
             st.markdown("**📦 彙總表 (店家用)**")
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
-            
             for idx, row in summary.iterrows():
                 with st.container(border=True):
                     c_qty, c_info = st.columns([1, 4])
-                    with c_qty:
-                        st.markdown(f'<div class="qty-badge">x{row["總量"]}</div>', unsafe_allow_html=True)
+                    with c_qty: st.markdown(f'<div class="qty-badge">x{row["總量"]}</div>', unsafe_allow_html=True)
                     with c_info:
                         st.markdown(f"**{idx + 1}. {row['餐點']}**")
                         if row['客製']: st.caption(f"{row['客製']}")
-                            
             st.metric("該區總額", f"${df_source['price'].sum()}")
-
         with c_det:
             st.markdown("**📋 明細表 (核對用)**")
             grouped_by_person = df_source.groupby('name')
@@ -302,20 +255,18 @@ def render_stats_section(r_name, d_name):
                     st.markdown(f"**👤 {name}**")
                     for _, row in group.iterrows():
                         st.markdown(f"• {row['item_name']} (x{row['quantity']}) <span style='color:gray; font-size:0.9em'>${row['price']}</span>", unsafe_allow_html=True)
-                        if row['custom']:
-                            st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;└ {row['custom']}")
+                        if row['custom']: st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;└ {row['custom']}")
 
     show_stats_optimized(df_all[df_all['category'] == '主餐'], "🍱 主餐統計", "header-food")
     st.divider()
     show_stats_optimized(df_all[df_all['category'] == '飲料'], "🥤 飲料統計", "header-drink")
 
 # ==========================================
-# 6. 收款管理 Fragment
+# 5. 收款管理
 # ==========================================
 @st.fragment(run_every=10)
 def render_payment_section():
     st.markdown(f'<div class="refresh-text">🔄 自動刷新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-    
     df_all = get_db("SELECT * FROM orders")
     if df_all.empty: st.write("尚無訂單。"); return
     
@@ -332,16 +283,13 @@ def render_payment_section():
 
 def _pay_logic_grouped(cat, df, k):
     if df.empty: st.caption("無資料"); return
-    
     unpaid_df = df[df['is_paid'] == 0]
     if not unpaid_df.empty:
         grouped_unpaid = unpaid_df.groupby('name')
         st.markdown(f"**⚠️ 待收款 ({len(grouped_unpaid)} 人)**")
-        
         for name, group in grouped_unpaid:
             total_price = group['price'].sum()
             ids = group['id'].tolist()
-            
             with st.container(border=True):
                 c_header, c_btn = st.columns([3, 1.2])
                 with c_header:
@@ -352,14 +300,12 @@ def _pay_logic_grouped(cat, df, k):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
                         st.toast(f"💰 已收: {name} (${total_price})"); st.rerun()
-                
                 st.markdown("---")
                 for _, row in group.iterrows():
                     r1, r2 = st.columns([4, 1])
                     with r1: st.markdown(f"**{row['item_name']}** <span style='color:gray; font-size:0.85em'>x{row['quantity']}</span>", unsafe_allow_html=True)
                     with r2: st.markdown(f"<div style='text-align:right'>${row['price']}</div>", unsafe_allow_html=True)
                     if row['custom']: st.caption(f"└ {row['custom']}")
-
     else: st.success("👍 此區全數已付款！")
     
     paid_df = df[df['is_paid'] == 1]
@@ -378,54 +324,66 @@ def _pay_logic_grouped(cat, df, k):
                         st.toast(f"↩️ 已撤銷: {name}"); st.rerun()
 
 # ==========================================
-# 7. 主畫面 (Tab 1 - 我要點餐)
+# 6. 主畫面 (Tab 1) - Dialog 定義
 # ==========================================
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
 
-# === 定義選人對話框 (Dialog) ===
-# 這是一個模態視窗，選完後會自動關閉
+# 1. 登入 Dialog
 @st.dialog("👤 請選擇你的名字")
 def login_dialog():
     st.caption("點擊下方名字即可登入")
-    # 使用 Pills 讓使用者點選
     selected = st.pills("人員清單", colleagues_list, selection_mode="single", label_visibility="collapsed")
     if selected:
-        # 選到後，寫入 Session State 並重新整理 (這會關閉 Dialog)
         st.session_state['user_name'] = selected
         st.rerun()
 
-# 確保 Session State 有 user_name 變數
-if 'user_name' not in st.session_state:
-    st.session_state['user_name'] = None
+# 2. [v2.5 新增] 客製化 Dialog
+# 使用 dialog 取代 popover，讓使用者可以安心打字、選按鈕，最後按完成才關閉
+@st.dialog("🎨 選擇客製化")
+def custom_dialog(key_prefix):
+    st.caption("快速選項 (可複選)")
+    # 從 session_state 讀取目前狀態，確保重開視窗時資料還在
+    current_tags = st.session_state.get(f"{key_prefix}_tags", [])
+    current_manual = st.session_state.get(f"{key_prefix}_manual", "")
+    
+    # Pills (多選)
+    new_tags = st.pills("客製選項", custom_tags, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
+    
+    st.markdown("---")
+    
+    # 手動輸入
+    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：醬多、飯一半...", key=f"{key_prefix}_manual_widget")
+    
+    if st.button("✅ 完成", use_container_width=True, type="primary"):
+        # 將結果存回 session_state
+        st.session_state[f"{key_prefix}_tags"] = new_tags
+        st.session_state[f"{key_prefix}_manual"] = new_manual
+        st.rerun()
+
+# Session State 初始化
+if 'user_name' not in st.session_state: st.session_state['user_name'] = None
+# 初始化客製化暫存
+if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
+if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'] = ""
 
 with tab1:
-    if st.button("🔄 刷新頁面 (手動同步)", type="secondary", use_container_width=True): 
-        st.rerun()
+    if st.button("🔄 刷新頁面 (手動同步)", type="secondary", use_container_width=True): st.rerun()
         
     with st.container(border=True):
         st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
-        
-        # 顯示目前的使用者，或顯示「請登入」
         c_user, c_btn = st.columns([3, 1.5])
         with c_user:
-            if st.session_state['user_name']:
-                st.info(f"Hi, **{st.session_state['user_name']}**！")
-            else:
-                st.warning("⚠️ 尚未選擇名字")
-        
+            if st.session_state['user_name']: st.info(f"Hi, **{st.session_state['user_name']}**！")
+            else: st.warning("⚠️ 尚未選擇名字")
         with c_btn:
-            # 按下按鈕，呼叫 login_dialog
             if st.button("👤 切換/登入", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
                 login_dialog()
-
-        # 如果沒登入，就擋在這裡
-        if not st.session_state['user_name']:
-            st.stop()
+        if not st.session_state['user_name']: st.stop()
 
     user_name = st.session_state['user_name']
 
-    # 個人待購清單
+    # 待購清單
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
     my_sum = my_orders['price'].sum() if not my_orders.empty else 0
     with st.expander(f"📋 {user_name} 的待購清單 (合計: ${my_sum})", expanded=True if not my_orders.empty else False):
@@ -455,29 +413,34 @@ with tab1:
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
             
-            # === 客製化維持 Popover (因為是多選，不需要自動關閉) ===
-            with st.popover("👇 選擇客製化 (含手動)", use_container_width=True):
-                st.caption("快速選項 (可複選)")
-                m_other = st.pills("客製選項", custom_tags, key="m_other", selection_mode="multi", label_visibility="collapsed")
-                st.markdown("---") 
-                m_custom_manual = st.text_input("或是手動輸入", placeholder="例如：醬多、飯一半...", key="m_custom_manual")
-
-            final_custom_list = m_other.copy() if m_other else []
-            if m_custom_manual: final_custom_list.append(m_custom_manual)
-
-            if final_custom_list: st.caption(f"✅ 已選客製: {', '.join(final_custom_list)}")
+            # === [v2.5 改版] 客製化使用 Dialog ===
+            # 準備顯示目前的客製化內容
+            current_tags = st.session_state.get("m_custom_tags", [])
+            current_manual = st.session_state.get("m_custom_manual", "")
+            
+            # 組合顯示字串
+            display_list = current_tags.copy()
+            if current_manual: display_list.append(current_manual)
+            display_text = ", ".join(display_list) if display_list else "無"
+            
+            # 按鈕顯示目前狀態
+            if st.button(f"🎨 選擇客製化 (目前: {display_text})", use_container_width=True):
+                custom_dialog("m_custom")
             
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
                     cust = f"{m_spicy}" if m_spicy != "無" else ""
-                    if final_custom_list: 
+                    if display_list: 
                         prefix = " " if cust else ""
-                        cust += f"{prefix}{','.join(final_custom_list)}"
+                        cust += f"{prefix}{','.join(display_list)}"
                         
                     total_p = m_price_unit * m_qty
                     if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
                                   (user_name, "主餐", m_name, total_p, cust, m_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
+                        # 成功後清空客製化暫存
+                        st.session_state["m_custom_tags"] = []
+                        st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} x{m_qty}"); st.rerun()
                 else: st.toast("⚠️ 請輸入主餐名稱")
 
