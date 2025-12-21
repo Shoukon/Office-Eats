@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 # --- 1. 全域設定與 CSS 美化 ---
-st.set_page_config(page_title="點餐囉！各位～ v2.0", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.0", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -265,7 +265,7 @@ def _pay_logic(cat, df, k):
     conn.commit(); conn.close()
 
 # --- 6. 主頁面 ---
-st.title("🍱 點餐囉！各位～")
+st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
 
 with tab1:
@@ -361,4 +361,5 @@ with tab1:
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
 with tab3: render_payment_section()
+
 
