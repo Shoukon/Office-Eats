@@ -14,7 +14,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.7", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.4", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -69,9 +69,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # 2. 資料庫邏輯
 # ==========================================
 DEFAULT_COLLEAGUES = [
-    "小昏", "阿文", "Jeff", "明穎", "薯條", "阿莨", "吳姐", 
-    "妙莉", "歆媛", "白白", "小熊", "之之", "方方", "企鵝", 
-    "欣蘋", "博榮", "欣蓉", "小安", "姷瑢"
+    "小昏", "阿文"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
@@ -471,3 +469,4 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
+
