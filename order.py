@@ -95,13 +95,11 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # 2. 資料庫邏輯
 # ==========================================
 DEFAULT_COLLEAGUES = [
-    "阿修", "阿文", "小昏", "Jeff", "明穎", "薯條", "阿莨", "吳姐", 
-    "妙莉", "歆媛", "白白", "小熊", "之之", "方方", "企鵝", 
-    "欣蘋", "博榮", "欣蓉", "小安", "姷瑢"
+    "小昏", "阿文"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
-    "ice": ["正常冰", "少冰", "微冰", "去冰", "完全去冰", "溫", "熱"],
+    "ice": ["正常冰", "微冰", "少冰", "去冰", "完全去冰", "溫", "熱"],
     "sugar": ["正常糖", "少糖", "半糖", "微糖", "一分糖", "無糖"],
     "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"]
 }
@@ -392,7 +390,7 @@ with tab1:
         
         # === [v7.5 修正] 使用 Popover + Pills 取代 Selectbox ===
         # 解決手機端鍵盤彈出的問題
-        with st.popover("👇 點擊選擇名字", use_container_width=True):
+        with st.popover("👇 選擇名字", use_container_width=True):
             st.caption("請從下方名單選擇")
             user_name = st.pills("人員清單", colleagues_list, default=colleagues_list[0], selection_mode="single", label_visibility="collapsed")
         
@@ -470,3 +468,4 @@ with tab1:
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
 with tab3: render_payment_section()
+
