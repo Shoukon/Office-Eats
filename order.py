@@ -169,8 +169,8 @@ custom_tags = df_tags["option_value"].tolist()
 with st.sidebar:
     st.header("⚙️ 團主設定")
     with st.expander("📝 編輯店家", expanded=True):
-        restaurant_name = st.text_input("主餐店家", "好吃雞肉飯")
-        drink_shop_name = st.text_input("飲料店家", "清新飲料")
+        restaurant_name = st.text_input("主餐店家", "要吃什麼？")
+        drink_shop_name = st.text_input("飲料店家", "要喝什麼？")
     st.divider()
     with st.expander("👥 人員管理"):
         edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
@@ -349,4 +349,5 @@ with tab1:
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
 with tab3: render_payment_section()
+
 
