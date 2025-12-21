@@ -6,14 +6,13 @@ import os
 from datetime import datetime
 
 # --- 1. 全域設定與 CSS 美化 ---
-st.set_page_config(page_title="點餐囉！各位～ v1, 1", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐囉！各位～ v1.2", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Tab 樣式優化 */
     .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; }
     .stTabs [data-baseweb="tab"] {
         height: 50px; border-radius: 8px;
@@ -22,14 +21,12 @@ custom_css = """
     }
     .stTabs [aria-selected="true"] { background-color: #FF4B4B !important; color: white !important; }
     
-    /* 標題裝飾條 */
     .section-header {
         padding: 12px 15px; border-radius: 8px; margin-bottom: 15px;
         color: white; font-weight: bold; font-size: 1.1rem;
         display: flex; align-items: center; gap: 10px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    /* 定義顏色變數 */
     :root {
         --food-gradient: linear-gradient(135deg, #FF8C00, #FF4500);
         --drink-gradient: linear-gradient(135deg, #008080, #2E8B57);
@@ -39,25 +36,19 @@ custom_css = """
     .header-drink { background: var(--drink-gradient); }
     .header-money { background: var(--money-gradient); color: white;}
     
-    /* 指標卡片與 Dataframe 優化 */
     div[data-testid="stMetric"] {
         background-color: var(--secondary-background-color);
         border: 1px solid rgba(255, 255, 255, 0.1); padding: 15px; border-radius: 8px;
     }
     
-    /* === 按鈕風格化 (CSS Hack) === */
-    /* 針對 "主餐區" Primary 按鈕 */
+    /* 按鈕風格化 */
     div[data-testid="column"]:nth-of-type(1) div[data-testid="stVerticalBlock"] > div.stButton > button[kind="primary"] {
-        background: var(--food-gradient);
-        color: white; border: none; transition: opacity 0.3s;
+        background: var(--food-gradient); color: white; border: none; transition: opacity 0.3s;
     }
-    /* 針對 "飲料區" Primary 按鈕 */
     div[data-testid="column"]:nth-of-type(2) div[data-testid="stVerticalBlock"] > div.stButton > button[kind="primary"] {
-        background: var(--drink-gradient);
-        color: white; border: none; transition: opacity 0.3s;
+        background: var(--drink-gradient); color: white; border: none; transition: opacity 0.3s;
     }
     div.stButton > button[kind="primary"]:hover { opacity: 0.9; border: none !important; }
-
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -66,12 +57,12 @@ st.markdown(custom_css, unsafe_allow_html=True)
 DB_FILE = "lunch.db"
 DEFAULT_COLLEAGUES = [
     "小昏", "阿文"
-        ]
+]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
     "ice": ["正常冰", "少冰", "微冰", "去冰", "完全去冰", "溫", "熱"],
     "sugar": ["正常糖", "少糖", "半糖", "微糖", "一分糖", "無糖"],
-    "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"]
+    "tags": ["不要蔥", "不要蒜", "不要薑", "不要瓜類", "不要高麗菜", "不要香菜"]
 }
 
 def init_db():
@@ -124,16 +115,26 @@ def get_db_size():
     try: return os.path.getsize(DB_FILE) / 1024
     except FileNotFoundError: return 0
 
+# === [關鍵修改] 加入 ORDER BY rowid 以確保順序 ===
 def get_config_list(table, col, cat=None):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    q = f"SELECT {col} FROM {table}" + (f" WHERE category = ?" if cat else "")
-    p = (cat,) if cat else ()
+    # 修改 SQL 語句，強制依照 rowid 排序 (即寫入順序)
+    if cat:
+        q = f"SELECT {col} FROM {table} WHERE category = ? ORDER BY rowid"
+        p = (cat,)
+    else:
+        q = f"SELECT {col} FROM {table} ORDER BY rowid"
+        p = ()
+        
     df = pd.read_sql_query(q, conn, params=p)
     conn.close()
     return df
 
 def update_config_list(table, col, new_df, cat=None):
+    # 先刪除舊資料
     execute_db(f"DELETE FROM {table}" + (f" WHERE category = '{cat}'" if cat else ""))
+    
+    # 再依序寫入新資料 (這樣 rowid 就會依照新順序產生)
     conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
     c = conn.cursor()
     if cat:
@@ -150,10 +151,19 @@ init_db()
 # --- 3. 讀取設定 ---
 df_colleagues = get_config_list("config_colleagues", "name")
 colleagues_list = df_colleagues["name"].tolist() if not df_colleagues.empty else ["請新增人員"]
-spicy_levels = ["無"] + get_config_list("config_options", "option_value", "spicy")["option_value"].tolist()
-ice_levels = get_config_list("config_options", "option_value", "ice")["option_value"].tolist()
-sugar_levels = get_config_list("config_options", "option_value", "sugar")["option_value"].tolist()
-custom_tags = get_config_list("config_options", "option_value", "tags")["option_value"].tolist()
+
+# 這些 List 現在會嚴格依照後台表格的順序排列
+df_spicy = get_config_list("config_options", "option_value", "spicy")
+spicy_levels = ["無"] + df_spicy["option_value"].tolist()
+
+df_ice = get_config_list("config_options", "option_value", "ice")
+ice_levels = df_ice["option_value"].tolist()
+
+df_sugar = get_config_list("config_options", "option_value", "sugar")
+sugar_levels = df_sugar["option_value"].tolist()
+
+df_tags = get_config_list("config_options", "option_value", "tags")
+custom_tags = df_tags["option_value"].tolist()
 
 # --- 4. 側邊欄 ---
 with st.sidebar:
@@ -179,6 +189,8 @@ with st.sidebar:
                 if st.button(f"儲存{lbl}", key=f"btn_{cat}"):
                     update_config_list("config_options", "option_value", ed, cat)
                     st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
+        
+        # 重新讀取確保順序正確 (雖然後面有 rerender 但這樣比較保險)
         render_opt(t1, "spicy", get_config_list("config_options", "option_value", "spicy"), "辣度")
         render_opt(t2, "ice", get_config_list("config_options", "option_value", "ice"), "冰塊")
         render_opt(t3, "sugar", get_config_list("config_options", "option_value", "sugar"), "甜度")
@@ -254,7 +266,7 @@ def _pay_logic(cat, df, k):
     conn.commit(); conn.close()
 
 # --- 6. 主頁面 ---
-st.title("🍱 點餐囉！各位～")
+st.title("🍱 Office Eats")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
 
 with tab1:
@@ -275,11 +287,8 @@ with tab1:
                 c2.write(f"**{row['item_name']}** x{row['quantity']}")
                 c3.write(f"${row['price']}")
                 
-                # === [關鍵優化] 防止誤刪的 Popover ===
-                # 使用 Popover 取代直接刪除按鈕
                 with c4.popover("🗑️", help="點擊開啟刪除確認"):
                     st.write(f"確定刪除 **{row['item_name']}**？")
-                    # 在 Popover 裡面放確認按鈕
                     if st.button("⭕ 確認刪除", key=f"confirm_del_{row['id']}", type="primary"):
                         execute_db("DELETE FROM orders WHERE id = ?", (row['id'],))
                         st.toast("✅ 已刪除")
@@ -300,7 +309,6 @@ with tab1:
             m_other = st.multiselect("客製", custom_tags, key="m_other")
             
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
-                # === [關鍵優化] 金額防呆 ===
                 if m_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
@@ -327,7 +335,6 @@ with tab1:
             d_sugar = cu.selectbox("甜度", sugar_levels, key="d_sugar")
             
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
-                # === [關鍵優化] 金額防呆 ===
                 if d_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
@@ -341,5 +348,4 @@ with tab1:
                     st.toast("⚠️ 請輸入飲料名稱")
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
-
 with tab3: render_payment_section()
