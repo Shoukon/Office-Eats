@@ -56,15 +56,6 @@ custom_css = """
             font-size: 16px !important; 
         }
     }
-    
-    /* 收款卡片特別樣式 */
-    .pay-card {
-        padding: 10px;
-        border-radius: 8px;
-        background-color: var(--secondary-background-color);
-        margin-bottom: 8px;
-        border-left: 5px solid #FF4B4B; /* 未付紅線 */
-    }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -176,19 +167,15 @@ sugar_levels = df_sugar["option_value"].tolist()
 df_tags = get_config_list("config_options", "option_value", "tags")
 custom_tags = df_tags["option_value"].tolist()
 
-# --- 4. 側邊欄 (重構：開放功能置頂，進階功能隱藏) ---
+# --- 4. 側邊欄 ---
 with st.sidebar:
     st.header("⚙️ 開團管理 (全員可用)")
     
-    # === 1. 編輯店家 (開放) ===
-    # 移除 Expander，使其直接可見，方便大家填寫
     st.subheader("1. 今日店家")
     restaurant_name = st.text_input("主餐店家", "好吃雞肉飯")
     drink_shop_name = st.text_input("飲料店家", "清新飲料")
-    
     st.divider()
 
-    # === 2. 清空資料庫 (開放) ===
     st.subheader("2. 每日重置")
     if "confirm_reset" not in st.session_state:
         st.session_state.confirm_reset = False
@@ -208,14 +195,10 @@ with st.sidebar:
         if c2.button("❌ 取消"):
             st.session_state.confirm_reset = False
             st.rerun()
-
     st.divider()
 
-    # === 3. 進階系統維護 (摺疊隱藏) ===
-    # 這邊放比較少用到的設定，避免誤觸，但也不設密碼，方便需要時打開
     with st.expander("🔧 進階系統設定 (人員/菜單)"):
         st.caption("⚠️ 此區影響全域設定，請小心操作")
-        
         st.write("**👥 人員名單**")
         edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
             column_config={"name": st.column_config.TextColumn("姓名", required=True)},
@@ -225,7 +208,6 @@ with st.sidebar:
             st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
             
         st.divider()
-        
         st.write("**🛠️ 菜單選項**")
         t1, t2, t3, t4 = st.tabs(["辣度", "冰塊", "甜度", "客製"])
         def render_opt(tab, cat, df, lbl):
@@ -236,7 +218,6 @@ with st.sidebar:
                 if st.button(f"儲存{lbl}", key=f"btn_{cat}"):
                     update_config_list("config_options", "option_value", ed, cat)
                     st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
-        
         render_opt(t1, "spicy", get_config_list("config_options", "option_value", "spicy"), "辣度")
         render_opt(t2, "ice", get_config_list("config_options", "option_value", "ice"), "冰塊")
         render_opt(t3, "sugar", get_config_list("config_options", "option_value", "sugar"), "甜度")
@@ -285,42 +266,63 @@ def render_payment_section():
         st.success("🎉 太棒了！款項已全數收齊！")
     
     t1, t2 = st.tabs(["🍱 主餐收款", "🥤 飲料收款"])
-    with t1: _pay_logic_card_style("主餐", df_all[df_all['category'] == '主餐'], "main")
-    with t2: _pay_logic_card_style("飲料", df_all[df_all['category'] == '飲料'], "drink")
+    with t1: _pay_logic_grouped("主餐", df_all[df_all['category'] == '主餐'], "main")
+    with t2: _pay_logic_grouped("飲料", df_all[df_all['category'] == '飲料'], "drink")
 
-def _pay_logic_card_style(cat, df, k):
+def _pay_logic_grouped(cat, df, k):
+    """卡片式收款 (合併姓名版)"""
     if df.empty: st.caption("無資料"); return
     
+    # 1. 處理未付款 (合併相同姓名)
     unpaid_df = df[df['is_paid'] == 0]
-    paid_df = df[df['is_paid'] == 1]
-    
     if not unpaid_df.empty:
-        st.markdown(f"**⚠️ 待收款 ({len(unpaid_df)} 筆)**")
-        for idx, row in unpaid_df.iterrows():
+        # 依姓名分組，計算總金額與收集 ID
+        grouped_unpaid = unpaid_df.groupby('name')
+        st.markdown(f"**⚠️ 待收款 ({len(grouped_unpaid)} 人)**")
+        
+        for name, group in grouped_unpaid:
+            total_price = group['price'].sum()
+            item_summary = []
+            ids = group['id'].tolist()
+            
+            # 生成明細字串
+            for _, row in group.iterrows():
+                item_summary.append(f"• {row['item_name']} x{row['quantity']} (${row['price']})")
+            
             with st.container(border=True):
                 c1, c2 = st.columns([3, 1.2])
                 with c1:
-                    st.markdown(f"**{row['name']}** - <span style='color:#FF4B4B; font-weight:bold'>${row['price']}</span>", unsafe_allow_html=True)
-                    st.caption(f"{row['item_name']} (x{row['quantity']})")
+                    st.markdown(f"**{name}** - <span style='color:#FF4B4B; font-weight:bold; font-size:1.1rem'>${total_price}</span>", unsafe_allow_html=True)
+                    # 顯示折疊明細，如果太多項
+                    st.caption("\n".join(item_summary))
                 with c2:
-                    if st.button("收款", key=f"pay_{k}_{row['id']}", use_container_width=True, type="primary"):
-                        execute_db("UPDATE orders SET is_paid = 1 WHERE id = ?", (row['id'],))
-                        st.toast(f"💰 已收: {row['name']}")
+                    if st.button("收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
+                        # 使用 IN 語句一次更新多筆
+                        placeholders = ','.join('?' * len(ids))
+                        execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
+                        st.toast(f"💰 已收: {name} (${total_price})")
                         st.rerun()
     else:
         st.success("👍 此區全數已付款！")
 
+    # 2. 處理已付款 (同樣合併顯示)
+    paid_df = df[df['is_paid'] == 1]
     if not paid_df.empty:
         st.write("") 
-        with st.expander(f"✅ 已付款名單 ({len(paid_df)} 筆) - 點此展開撤銷"):
-            for idx, row in paid_df.iterrows():
+        grouped_paid = paid_df.groupby('name')
+        with st.expander(f"✅ 已付款名單 ({len(grouped_paid)} 人) - 點此展開撤銷"):
+            for name, group in grouped_paid:
+                total_price = group['price'].sum()
+                ids = group['id'].tolist()
+                
                 c1, c2 = st.columns([3, 1.2])
                 with c1:
-                    st.write(f"~~{row['name']} - ${row['price']}~~") 
+                    st.write(f"~~{name} (${total_price})~~") 
                 with c2:
-                    if st.button("撤銷", key=f"undo_{k}_{row['id']}", use_container_width=True):
-                        execute_db("UPDATE orders SET is_paid = 0 WHERE id = ?", (row['id'],))
-                        st.toast(f"↩️ 已撤銷: {row['name']}")
+                    if st.button("撤銷", key=f"undo_{k}_{name}", use_container_width=True):
+                        placeholders = ','.join('?' * len(ids))
+                        execute_db(f"UPDATE orders SET is_paid = 0 WHERE id IN ({placeholders})", tuple(ids))
+                        st.toast(f"↩️ 已撤銷: {name}")
                         st.rerun()
 
 # --- 6. 主頁面 ---
