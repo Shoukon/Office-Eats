@@ -69,9 +69,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # 2. 資料庫邏輯
 # ==========================================
 DEFAULT_COLLEAGUES = [
-    "小昏", "阿文", "Jeff", "明穎", "薯條", "阿莨", "吳姐", 
-    "妙莉", "歆媛", "白白", "小熊", "之之", "方方", "企鵝", 
-    "欣蘋", "博榮", "欣蓉", "小安", "姷瑢"
+    "小昏", "阿文"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
@@ -377,7 +375,7 @@ with tab1:
             if st.session_state['user_name']: st.info(f"Hi, **{st.session_state['user_name']}**！")
             else: st.warning("⚠️ 尚未選擇名字")
         with c_btn:
-            if st.button("👤 切換/登入", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
+            if st.button("👤 登入/切換", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
                 login_dialog()
         if not st.session_state['user_name']: st.stop()
 
@@ -466,3 +464,4 @@ with tab1:
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
 with tab3: render_payment_section()
+
