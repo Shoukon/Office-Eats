@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 # --- 1. 全域設定與 CSS 美化 ---
-st.set_page_config(page_title="Office Eats v6.6", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐囉！各位～ v2.0", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -63,9 +63,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # --- 2. 資料庫邏輯 ---
 DB_FILE = "lunch.db"
 DEFAULT_COLLEAGUES = [
-    "阿修", "阿文", "小昏", "Jeff", "明穎", "薯條", "阿莨", "吳姐", 
-    "妙莉", "歆媛", "白白", "小熊", "之之", "方方", "企鵝", 
-    "欣蘋", "博榮", "欣蓉", "小安", "姷瑢"
+    "小昏", "阿文"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
@@ -171,8 +169,8 @@ custom_tags = df_tags["option_value"].tolist()
 with st.sidebar:
     st.header("⚙️ 團主設定")
     with st.expander("📝 編輯店家", expanded=True):
-        restaurant_name = st.text_input("主餐店家", "好吃雞肉飯")
-        drink_shop_name = st.text_input("飲料店家", "清新飲料")
+        restaurant_name = st.text_input("主餐店家", "吃什麼？")
+        drink_shop_name = st.text_input("飲料店家", "喝什麼？")
     st.divider()
     with st.expander("👥 人員管理"):
         edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
@@ -273,7 +271,7 @@ tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收�
 with tab1:
     if st.button("🔄 刷新頁面", type="secondary", use_container_width=True): st.rerun()
     with st.container(border=True):
-        st.markdown('<h5>👤 第一步：請問你是誰？</h5>', unsafe_allow_html=True)
+        st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
         user_name = st.selectbox("選擇名字", colleagues_list, label_visibility="collapsed")
 
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
@@ -312,7 +310,7 @@ with tab1:
             
             # === [關鍵優化] 客製化 Popover ===
             # 使用 Popover 解決 "選項太多" + "下拉選單跳動" 的問題
-            with st.popover("👇 選擇客製化 (點此展開)", use_container_width=True):
+            with st.popover("👇 選擇客製化", use_container_width=True):
                 st.caption("請選擇客製需求 (可複選)")
                 # 使用 Pills 在 Popover 裡面，不佔主畫面空間，且不會觸發鍵盤
                 m_other = st.pills("客製選項", custom_tags, key="m_other", selection_mode="multi", label_visibility="collapsed")
