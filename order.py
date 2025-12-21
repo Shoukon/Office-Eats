@@ -6,11 +6,10 @@ import os
 from datetime import datetime
 
 # --- 0. 管理員密碼設定 ---
-# 請在此修改密碼 (預設為 8888)
-ADMIN_PASSWORD = "0678678"
+ADMIN_PASSWORD = "8888"
 
 # --- 1. 全域設定與 CSS 美化 ---
-st.set_page_config(page_title="點餐哦各位～ v2.1", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.2", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -54,22 +53,27 @@ custom_css = """
     }
     div.stButton > button[kind="primary"]:hover { opacity: 0.9; border: none !important; }
 
-    /* 防止 iPhone 自動放大與鍵盤干擾 */
     @media screen and (max-width: 768px) {
         input, select, textarea {
             font-size: 16px !important; 
         }
     }
     
-    /* 表格優化: 讓 st.table 字體稍微大一點，增加閱讀性 */
-    table {
-        width: 100%;
-        border-collapse: collapse;
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+    
+    /* 收款明細的小字修正 */
+    .receipt-item {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+        font-size: 0.95rem;
     }
-    th, td {
-        text-align: left;
-        padding: 8px;
-        border-bottom: 1px solid #ddd;
+    .receipt-custom {
+        color: gray;
+        font-size: 0.85rem;
+        margin-left: 10px;
+        margin-bottom: 8px;
     }
 </style>
 """
@@ -169,23 +173,18 @@ init_db()
 # --- 3. 讀取設定 ---
 df_colleagues = get_config_list("config_colleagues", "name")
 colleagues_list = df_colleagues["name"].tolist() if not df_colleagues.empty else ["請新增人員"]
-
 df_spicy = get_config_list("config_options", "option_value", "spicy")
 spicy_levels = ["無"] + df_spicy["option_value"].tolist()
-
 df_ice = get_config_list("config_options", "option_value", "ice")
 ice_levels = df_ice["option_value"].tolist()
-
 df_sugar = get_config_list("config_options", "option_value", "sugar")
 sugar_levels = df_sugar["option_value"].tolist()
-
 df_tags = get_config_list("config_options", "option_value", "tags")
 custom_tags = df_tags["option_value"].tolist()
 
 # --- 4. 側邊欄 ---
 with st.sidebar:
     st.header("⚙️ 開團管理")
-    
     st.subheader("1. 今日店家")
     restaurant_name = st.text_input("主餐店家", "好吃雞肉飯")
     drink_shop_name = st.text_input("飲料店家", "清新飲料")
@@ -203,13 +202,10 @@ with st.sidebar:
         if c2.button("❌ 取消"): st.session_state.confirm_reset = False; st.rerun()
     st.divider()
 
-    # === [關鍵功能] 密碼鎖定的進階設定 ===
     with st.expander("🔧 進階設定 (需密碼)"):
         pwd_input = st.text_input("輸入管理員密碼", type="password", key="admin_pwd")
-        
         if pwd_input == ADMIN_PASSWORD:
             st.success("🔓 已解鎖")
-            
             st.write("**👥 人員名單**")
             edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
                 column_config={"name": st.column_config.TextColumn("姓名", required=True)},
@@ -217,7 +213,6 @@ with st.sidebar:
             if st.button("💾 儲存人員"):
                 update_config_list("config_colleagues", "name", edited_colleagues)
                 st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
-                
             st.divider()
             st.write("**🛠️ 菜單選項**")
             t1, t2, t3, t4 = st.tabs(["辣度", "冰塊", "甜度", "客製"])
@@ -233,11 +228,8 @@ with st.sidebar:
             render_opt(t2, "ice", get_config_list("config_options", "option_value", "ice"), "冰塊")
             render_opt(t3, "sugar", get_config_list("config_options", "option_value", "sugar"), "甜度")
             render_opt(t4, "tags", get_config_list("config_options", "option_value", "tags"), "標籤")
-        
-        elif pwd_input:
-            st.error("🚫 密碼錯誤")
-        else:
-            st.caption("請輸入密碼以修改人員或菜單")
+        elif pwd_input: st.error("🚫 密碼錯誤")
+        else: st.caption("請輸入密碼以修改人員或菜單")
 
 # --- 5. 統計看板 (閱讀體驗優化版) ---
 @st.fragment(run_every=10)
@@ -252,28 +244,26 @@ def render_stats_section(r_name, d_name):
         
         c_sum, c_det = st.columns([1, 1.2])
         
-        # === 左側：彙總表 (使用 st.table 確保換行) ===
+        # === 左側：彙總表 ===
         with c_sum:
             st.markdown("**📦 彙總表 (店家用)**")
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
-            # 使用 st.table 而非 dataframe，因為 table 會自動換行，不會吃字
             st.table(summary) 
             st.metric("該區總額", f"${df_source['price'].sum()}")
 
-        # === 右側：明細表 (使用 Card View 確保完整閱讀) ===
+        # === 右側：明細表 (人員歸戶) ===
         with c_det:
             st.markdown("**📋 明細表 (核對用)**")
-            # 不用表格，改用卡片顯示，手機閱讀體驗最佳
-            for _, row in df_source.iterrows():
+            grouped_by_person = df_source.groupby('name')
+            
+            for name, group in grouped_by_person:
                 with st.container(border=True):
-                    # 第一行：姓名 + 餐點 + 數量
-                    st.markdown(f"**{row['name']}** : {row['item_name']} (x{row['quantity']})")
-                    # 第二行：客製化內容 (完整顯示)
-                    if row['custom']:
-                        st.caption(f"└ {row['custom']}")
-                    # 第三行：價格 (靠右或獨立一行)
-                    st.markdown(f"<div style='text-align:right; color:gray'>${row['price']}</div>", unsafe_allow_html=True)
+                    st.markdown(f"**👤 {name}**")
+                    for _, row in group.iterrows():
+                        st.markdown(f"• {row['item_name']} (x{row['quantity']}) <span style='color:gray; font-size:0.9em'>${row['price']}</span>", unsafe_allow_html=True)
+                        if row['custom']:
+                            st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;└ {row['custom']}")
 
     show_stats_optimized(df_all[df_all['category'] == '主餐'], "🍱 主餐統計", "header-food")
     st.divider()
@@ -297,29 +287,54 @@ def render_payment_section():
     with t2: _pay_logic_grouped("飲料", df_all[df_all['category'] == '飲料'], "drink")
 
 def _pay_logic_grouped(cat, df, k):
+    """
+    [v7.2 優化] 收款卡片改為類似收據的排版 (Receipt Style)
+    排列清楚，層次分明
+    """
     if df.empty: st.caption("無資料"); return
+    
     unpaid_df = df[df['is_paid'] == 0]
     if not unpaid_df.empty:
         grouped_unpaid = unpaid_df.groupby('name')
         st.markdown(f"**⚠️ 待收款 ({len(grouped_unpaid)} 人)**")
+        
         for name, group in grouped_unpaid:
             total_price = group['price'].sum()
-            item_summary = []
             ids = group['id'].tolist()
-            for _, row in group.iterrows():
-                item_summary.append(f"• {row['item_name']} x{row['quantity']} (${row['price']})")
+            
+            # 使用 Card Container
             with st.container(border=True):
-                c1, c2 = st.columns([3, 1.2])
-                with c1:
-                    st.markdown(f"**{name}** - <span style='color:#FF4B4B; font-weight:bold; font-size:1.1rem'>${total_price}</span>", unsafe_allow_html=True)
-                    st.caption("\n".join(item_summary))
-                with c2:
+                # 上層：姓名 + 總金額 + 按鈕
+                c_header, c_btn = st.columns([3, 1.2])
+                with c_header:
+                    st.markdown(f"**{name}**")
+                    st.markdown(f"應付: <span style='color:#FF4B4B; font-weight:bold; font-size:1.1rem'>${total_price}</span>", unsafe_allow_html=True)
+                with c_btn:
                     if st.button("收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
                         st.toast(f"💰 已收: {name} (${total_price})"); st.rerun()
+                
+                # 分隔線
+                st.markdown("---")
+                
+                # 下層：明細列表 (使用 Columns 對齊)
+                for _, row in group.iterrows():
+                    r1, r2 = st.columns([4, 1])
+                    with r1:
+                        # 餐點名稱 + 數量
+                        st.markdown(f"**{row['item_name']}** <span style='color:gray; font-size:0.85em'>x{row['quantity']}</span>", unsafe_allow_html=True)
+                    with r2:
+                        # 價格靠右
+                        st.markdown(f"<div style='text-align:right'>${row['price']}</div>", unsafe_allow_html=True)
+                    
+                    # 客製化內容 (獨立一行)
+                    if row['custom']:
+                        st.caption(f"└ {row['custom']}")
+
     else: st.success("👍 此區全數已付款！")
     
+    # 已付款區塊 (保持簡單列表即可)
     paid_df = df[df['is_paid'] == 1]
     if not paid_df.empty:
         st.write(""); grouped_paid = paid_df.groupby('name')
