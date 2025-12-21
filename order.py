@@ -16,7 +16,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS 美化
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.3", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.4", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -95,7 +95,9 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # 2. 資料庫邏輯
 # ==========================================
 DEFAULT_COLLEAGUES = [
-    "小昏", "阿文"
+    "小昏", "阿文", "Jeff", "明穎", "薯條", "阿莨", "吳姐", 
+    "妙莉", "歆媛", "白白", "小熊", "之之", "方方", "企鵝", 
+    "欣蘋", "博榮", "欣蓉", "小安", "姷瑢"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
@@ -381,6 +383,22 @@ def _pay_logic_grouped(cat, df, k):
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
 
+# === 定義選人對話框 (Dialog) ===
+# 這是一個模態視窗，選完後會自動關閉
+@st.dialog("👤 請選擇你的名字")
+def login_dialog():
+    st.caption("點擊下方名字即可登入")
+    # 使用 Pills 讓使用者點選
+    selected = st.pills("人員清單", colleagues_list, selection_mode="single", label_visibility="collapsed")
+    if selected:
+        # 選到後，寫入 Session State 並重新整理 (這會關閉 Dialog)
+        st.session_state['user_name'] = selected
+        st.rerun()
+
+# 確保 Session State 有 user_name 變數
+if 'user_name' not in st.session_state:
+    st.session_state['user_name'] = None
+
 with tab1:
     if st.button("🔄 刷新頁面 (手動同步)", type="secondary", use_container_width=True): 
         st.rerun()
@@ -388,15 +406,24 @@ with tab1:
     with st.container(border=True):
         st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
         
-        with st.popover("👇 選擇名字", use_container_width=True):
-            st.caption("請從下方名單選擇")
-            user_name = st.pills("人員清單", colleagues_list, default=colleagues_list[0], selection_mode="single", label_visibility="collapsed")
+        # 顯示目前的使用者，或顯示「請登入」
+        c_user, c_btn = st.columns([3, 1.5])
+        with c_user:
+            if st.session_state['user_name']:
+                st.info(f"Hi, **{st.session_state['user_name']}**！")
+            else:
+                st.warning("⚠️ 尚未選擇名字")
         
-        if user_name:
-            st.info(f"Hi, **{user_name}**！ (如非本人，請點上方按鈕切換)")
-        else:
-            st.warning("⚠️ 請選擇名字")
+        with c_btn:
+            # 按下按鈕，呼叫 login_dialog
+            if st.button("👤 切換/登入", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
+                login_dialog()
+
+        # 如果沒登入，就擋在這裡
+        if not st.session_state['user_name']:
             st.stop()
+
+    user_name = st.session_state['user_name']
 
     # 個人待購清單
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
@@ -428,18 +455,15 @@ with tab1:
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
             
-            # === [v2.3 修正] 客製化 Popover：混合 Pills 與 Text Input ===
-            with st.popover("👇 選擇客製化", use_container_width=True):
+            # === 客製化維持 Popover (因為是多選，不需要自動關閉) ===
+            with st.popover("👇 選擇客製化 (含手動)", use_container_width=True):
                 st.caption("快速選項 (可複選)")
                 m_other = st.pills("客製選項", custom_tags, key="m_other", selection_mode="multi", label_visibility="collapsed")
-                st.markdown("---") # 分隔線
+                st.markdown("---") 
                 m_custom_manual = st.text_input("或是手動輸入", placeholder="例如：醬多、飯一半...", key="m_custom_manual")
 
-            # 邏輯處理：合併 pills 和 manual text
-            # 建立一個暫存清單來顯示在介面上，方便使用者確認
             final_custom_list = m_other.copy() if m_other else []
-            if m_custom_manual:
-                final_custom_list.append(m_custom_manual)
+            if m_custom_manual: final_custom_list.append(m_custom_manual)
 
             if final_custom_list: st.caption(f"✅ 已選客製: {', '.join(final_custom_list)}")
             
@@ -447,7 +471,6 @@ with tab1:
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
                     cust = f"{m_spicy}" if m_spicy != "無" else ""
-                    # 將合併後的清單轉為字串存入 DB
                     if final_custom_list: 
                         prefix = " " if cust else ""
                         cust += f"{prefix}{','.join(final_custom_list)}"
