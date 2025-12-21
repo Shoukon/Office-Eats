@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 # --- 1. 全域設定與 CSS 美化 ---
-st.set_page_config(page_title="點餐囉！各位～ v1.3", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="Office Eats v6.6", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -50,10 +50,10 @@ custom_css = """
     }
     div.stButton > button[kind="primary"]:hover { opacity: 0.9; border: none !important; }
 
-    /* === [關鍵修復] 防止 iPhone 自動放大與鍵盤干擾 === */
+    /* 防止 iPhone 自動放大與鍵盤干擾 */
     @media screen and (max-width: 768px) {
         input, select, textarea {
-            font-size: 16px !important; /* 強制 16px 防止 iOS zoom */
+            font-size: 16px !important; 
         }
     }
 </style>
@@ -63,7 +63,9 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # --- 2. 資料庫邏輯 ---
 DB_FILE = "lunch.db"
 DEFAULT_COLLEAGUES = [
-    "小昏", "阿文"
+    "阿修", "阿文", "小昏", "Jeff", "明穎", "薯條", "阿莨", "吳姐", 
+    "妙莉", "歆媛", "白白", "小熊", "之之", "方方", "企鵝", 
+    "欣蘋", "博榮", "欣蓉", "小安", "姷瑢"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
@@ -265,14 +267,13 @@ def _pay_logic(cat, df, k):
     conn.commit(); conn.close()
 
 # --- 6. 主頁面 ---
-st.title("點餐囉！各位～")
+st.title("🍱 Office Eats")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
 
 with tab1:
     if st.button("🔄 刷新頁面", type="secondary", use_container_width=True): st.rerun()
     with st.container(border=True):
         st.markdown('<h5>👤 第一步：請問你是誰？</h5>', unsafe_allow_html=True)
-        # 名字選單因為有搜尋需求，仍維持 Selectbox，但放最上面影響較小
         user_name = st.selectbox("選擇名字", colleagues_list, label_visibility="collapsed")
 
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
@@ -306,10 +307,19 @@ with tab1:
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             
-            # === [關鍵優化] 改用 Pills 膠囊按鈕，防止鍵盤彈出 ===
+            # === [改為 Pills] ===
             m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
-            # 客製化因選項多且可複選，維持 multiselect，但通常這步驟已經填完金額了，影響較小
-            m_other = st.multiselect("客製", custom_tags, key="m_other")
+            
+            # === [關鍵優化] 客製化 Popover ===
+            # 使用 Popover 解決 "選項太多" + "下拉選單跳動" 的問題
+            with st.popover("👇 選擇客製化 (點此展開)", use_container_width=True):
+                st.caption("請選擇客製需求 (可複選)")
+                # 使用 Pills 在 Popover 裡面，不佔主畫面空間，且不會觸發鍵盤
+                m_other = st.pills("客製選項", custom_tags, key="m_other", selection_mode="multi", label_visibility="collapsed")
+            
+            # 顯示已選的客製內容 (Feedback)
+            if m_other:
+                st.caption(f"✅ 已選客製: {', '.join(m_other)}")
             
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_price_unit == 0:
@@ -333,7 +343,7 @@ with tab1:
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
             
-            # === [關鍵優化] 改用 Pills 膠囊按鈕 ===
+            # === [改為 Pills] ===
             d_size = st.pills("尺寸", ["L", "M", "XL"], default="L", key="d_size", selection_mode="single")
             d_ice = st.pills("冰塊", ice_levels, default=ice_levels[0], key="d_ice", selection_mode="single")
             d_sugar = st.pills("甜度", sugar_levels, default=sugar_levels[0], key="d_sugar", selection_mode="single")
