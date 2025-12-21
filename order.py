@@ -66,6 +66,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 DB_FILE = "lunch.db"
 DEFAULT_COLLEAGUES = [
     "小昏", "阿文"
+        ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
     "ice": ["正常冰", "少冰", "微冰", "去冰", "完全去冰", "溫", "熱"],
@@ -340,4 +341,5 @@ with tab1:
                     st.toast("⚠️ 請輸入飲料名稱")
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
+
 with tab3: render_payment_section()
