@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 # --- 0. 管理員密碼設定 ---
-ADMIN_PASSWORD = "8888"
+ADMIN_PASSWORD = "0678678"
 
 # --- 1. 全域設定與 CSS 美化 ---
 st.set_page_config(page_title="點餐哦各位～ v2.2", page_icon="🍱", layout="wide")
@@ -59,21 +59,16 @@ custom_css = """
         }
     }
     
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
-    
-    /* 收款明細的小字修正 */
-    .receipt-item {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 4px;
-        font-size: 0.95rem;
-    }
-    .receipt-custom {
-        color: gray;
-        font-size: 0.85rem;
-        margin-left: 10px;
-        margin-bottom: 8px;
+    /* v7.3 新增：彙總表數量標籤樣式 */
+    .qty-badge {
+        font-size: 1.5rem; 
+        font-weight: bold; 
+        color: #FF4B4B; 
+        text-align: center;
+        line-height: 1.2;
+        border-right: 2px solid rgba(255,255,255,0.1);
+        padding-right: 10px;
+        margin-right: 5px;
     }
 </style>
 """
@@ -231,7 +226,7 @@ with st.sidebar:
         elif pwd_input: st.error("🚫 密碼錯誤")
         else: st.caption("請輸入密碼以修改人員或菜單")
 
-# --- 5. 統計看板 (閱讀體驗優化版) ---
+# --- 5. 統計看板 (v7.3 視覺與編號優化版) ---
 @st.fragment(run_every=10)
 def render_stats_section(r_name, d_name):
     st.caption(f"🔄 自動刷新 | {datetime.now().strftime('%H:%M:%S')}")
@@ -244,19 +239,36 @@ def render_stats_section(r_name, d_name):
         
         c_sum, c_det = st.columns([1, 1.2])
         
-        # === 左側：彙總表 ===
+        # === 左側：彙總表 (卡片樣式 + 數量強調 + 編號 1 起始) ===
         with c_sum:
             st.markdown("**📦 彙總表 (店家用)**")
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
-            st.table(summary) 
+            
+            # 使用手動迴圈取代 st.table，解決編號 0 與手機排版問題
+            for idx, row in summary.iterrows():
+                # 使用 container 建立每項餐點的卡片
+                with st.container(border=True):
+                    # 左右分欄：左邊強調數量，右邊顯示內容
+                    c_qty, c_info = st.columns([1, 4])
+                    
+                    with c_qty:
+                        # 數量標籤 (CSS class: qty-badge)
+                        st.markdown(f'<div class="qty-badge">x{row["總量"]}</div>', unsafe_allow_html=True)
+                    
+                    with c_info:
+                        # 編號從 idx + 1 開始
+                        st.markdown(f"**{idx + 1}. {row['餐點']}**")
+                        # 客製化內容 (有才顯示)
+                        if row['客製']:
+                            st.caption(f"{row['客製']}")
+                            
             st.metric("該區總額", f"${df_source['price'].sum()}")
 
-        # === 右側：明細表 (人員歸戶) ===
+        # === 右側：明細表 (核對用 - 人員歸戶) ===
         with c_det:
             st.markdown("**📋 明細表 (核對用)**")
             grouped_by_person = df_source.groupby('name')
-            
             for name, group in grouped_by_person:
                 with st.container(border=True):
                     st.markdown(f"**👤 {name}**")
@@ -287,24 +299,15 @@ def render_payment_section():
     with t2: _pay_logic_grouped("飲料", df_all[df_all['category'] == '飲料'], "drink")
 
 def _pay_logic_grouped(cat, df, k):
-    """
-    [v7.2 優化] 收款卡片改為類似收據的排版 (Receipt Style)
-    排列清楚，層次分明
-    """
     if df.empty: st.caption("無資料"); return
-    
     unpaid_df = df[df['is_paid'] == 0]
     if not unpaid_df.empty:
         grouped_unpaid = unpaid_df.groupby('name')
         st.markdown(f"**⚠️ 待收款 ({len(grouped_unpaid)} 人)**")
-        
         for name, group in grouped_unpaid:
             total_price = group['price'].sum()
             ids = group['id'].tolist()
-            
-            # 使用 Card Container
             with st.container(border=True):
-                # 上層：姓名 + 總金額 + 按鈕
                 c_header, c_btn = st.columns([3, 1.2])
                 with c_header:
                     st.markdown(f"**{name}**")
@@ -314,27 +317,14 @@ def _pay_logic_grouped(cat, df, k):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
                         st.toast(f"💰 已收: {name} (${total_price})"); st.rerun()
-                
-                # 分隔線
                 st.markdown("---")
-                
-                # 下層：明細列表 (使用 Columns 對齊)
                 for _, row in group.iterrows():
                     r1, r2 = st.columns([4, 1])
-                    with r1:
-                        # 餐點名稱 + 數量
-                        st.markdown(f"**{row['item_name']}** <span style='color:gray; font-size:0.85em'>x{row['quantity']}</span>", unsafe_allow_html=True)
-                    with r2:
-                        # 價格靠右
-                        st.markdown(f"<div style='text-align:right'>${row['price']}</div>", unsafe_allow_html=True)
-                    
-                    # 客製化內容 (獨立一行)
-                    if row['custom']:
-                        st.caption(f"└ {row['custom']}")
-
+                    with r1: st.markdown(f"**{row['item_name']}** <span style='color:gray; font-size:0.85em'>x{row['quantity']}</span>", unsafe_allow_html=True)
+                    with r2: st.markdown(f"<div style='text-align:right'>${row['price']}</div>", unsafe_allow_html=True)
+                    if row['custom']: st.caption(f"└ {row['custom']}")
     else: st.success("👍 此區全數已付款！")
     
-    # 已付款區塊 (保持簡單列表即可)
     paid_df = df[df['is_paid'] == 1]
     if not paid_df.empty:
         st.write(""); grouped_paid = paid_df.groupby('name')
@@ -357,7 +347,7 @@ tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收�
 with tab1:
     if st.button("🔄 刷新頁面", type="secondary", use_container_width=True): st.rerun()
     with st.container(border=True):
-        st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
+        st.markdown('<h5>👤 第一步：請問你是誰？</h5>', unsafe_allow_html=True)
         user_name = st.selectbox("選擇名字", colleagues_list, label_visibility="collapsed")
 
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
@@ -409,7 +399,7 @@ with tab1:
             cp, cq = st.columns(2)
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
-            d_size = st.pills("尺寸", ["L", "M", "XL"], default="L", key="d_size", selection_mode="single")
+            d_size = st.pills("尺寸", ["M", "L", "XL"], default="L", key="d_size", selection_mode="single")
             d_ice = st.pills("冰塊", ice_levels, default=ice_levels[0], key="d_ice", selection_mode="single")
             d_sugar = st.pills("甜度", sugar_levels, default=sugar_levels[0], key="d_sugar", selection_mode="single")
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
