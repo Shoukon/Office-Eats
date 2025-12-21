@@ -56,6 +56,15 @@ custom_css = """
             font-size: 16px !important; 
         }
     }
+    
+    /* 收款卡片特別樣式 */
+    .pay-card {
+        padding: 10px;
+        border-radius: 8px;
+        background-color: var(--secondary-background-color);
+        margin-bottom: 8px;
+        border-left: 5px solid #FF4B4B; /* 未付紅線 */
+    }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -63,7 +72,9 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # --- 2. 資料庫邏輯 ---
 DB_FILE = "lunch.db"
 DEFAULT_COLLEAGUES = [
-    "小昏", "阿文"
+    "阿修", "阿文", "小昏", "Jeff", "明穎", "薯條", "阿莨", "吳姐", 
+    "妙莉", "歆媛", "白白", "小熊", "之之", "方方", "企鵝", 
+    "欣蘋", "博榮", "欣蓉", "小安", "姷瑢"
 ]
 DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
@@ -169,8 +180,8 @@ custom_tags = df_tags["option_value"].tolist()
 with st.sidebar:
     st.header("⚙️ 團主設定")
     with st.expander("📝 編輯店家", expanded=True):
-        restaurant_name = st.text_input("主餐店家", "吃什麼？")
-        drink_shop_name = st.text_input("飲料店家", "喝什麼？")
+        restaurant_name = st.text_input("主餐店家", "好吃雞肉飯")
+        drink_shop_name = st.text_input("飲料店家", "清新飲料")
     st.divider()
     with st.expander("👥 人員管理"):
         edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
@@ -243,26 +254,56 @@ def render_payment_section():
     prog = paid / total if total > 0 else 0
     st.markdown(f'<div class="section-header header-money">💰 收款進度：${paid} / ${total}</div>', unsafe_allow_html=True)
     st.progress(prog)
-    if prog == 1.0: st.balloons(); st.success("🎉 款項全數收齊！")
+    
+    # [修正] 移除氣球特效，改用文字提示
+    if prog == 1.0: 
+        st.success("🎉 太棒了！款項已全數收齊！")
     
     t1, t2 = st.tabs(["🍱 主餐收款", "🥤 飲料收款"])
-    with t1: _pay_logic("主餐", df_all[df_all['category'] == '主餐'], "main")
-    with t2: _pay_logic("飲料", df_all[df_all['category'] == '飲料'], "drink")
+    with t1: _pay_logic_card_style("主餐", df_all[df_all['category'] == '主餐'], "main")
+    with t2: _pay_logic_card_style("飲料", df_all[df_all['category'] == '飲料'], "drink")
 
-def _pay_logic(cat, df, k):
+def _pay_logic_card_style(cat, df, k):
+    """卡片式收款介面 (Mobile Friendly)"""
     if df.empty: st.caption("無資料"); return
-    show_unpaid = st.toggle(f"只看未付 ({cat})", key=f"tg_{k}")
-    display = df[df['is_paid'] == 0] if show_unpaid else df
-    if display.empty and show_unpaid: st.success("👍 都付完了！"); return
-    edited = st.data_editor(display[['id', 'name', 'item_name', 'price', 'is_paid']],
-        column_config={"id": None, "name": "姓名", "item_name": "品項", "price": "金額", "is_paid": "已付"},
-        disabled=["name", "item_name", "price"], hide_index=True, key=f"ed_{k}", use_container_width=True)
     
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
-    cur = conn.cursor()
-    for _, row in edited.iterrows():
-        cur.execute("UPDATE orders SET is_paid = ? WHERE id = ?", (1 if row['is_paid'] else 0, row['id']))
-    conn.commit(); conn.close()
+    # 分離已付與未付
+    unpaid_df = df[df['is_paid'] == 0]
+    paid_df = df[df['is_paid'] == 1]
+    
+    # 1. 未付款區塊 (卡片式)
+    if not unpaid_df.empty:
+        st.markdown(f"**⚠️ 待收款 ({len(unpaid_df)} 筆)**")
+        for idx, row in unpaid_df.iterrows():
+            # 使用 container 模擬卡片
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 1.2]) # 左邊資訊，右邊按鈕
+                with c1:
+                    st.markdown(f"**{row['name']}** - <span style='color:#FF4B4B; font-weight:bold'>${row['price']}</span>", unsafe_allow_html=True)
+                    st.caption(f"{row['item_name']} (x{row['quantity']})")
+                with c2:
+                    # 大按鈕，方便手指點擊
+                    if st.button("收款", key=f"pay_{k}_{row['id']}", use_container_width=True, type="primary"):
+                        execute_db("UPDATE orders SET is_paid = 1 WHERE id = ?", (row['id'],))
+                        st.toast(f"💰 已收: {row['name']}")
+                        st.rerun()
+    else:
+        st.success("👍 此區全數已付款！")
+
+    # 2. 已付款區塊 (摺疊收納，避免佔位)
+    if not paid_df.empty:
+        st.write("") # 間隔
+        with st.expander(f"✅ 已付款名單 ({len(paid_df)} 筆) - 點此展開撤銷"):
+            for idx, row in paid_df.iterrows():
+                c1, c2 = st.columns([3, 1.2])
+                with c1:
+                    st.write(f"~~{row['name']} - ${row['price']}~~") # 刪除線效果
+                with c2:
+                    # 撤銷按鈕 (Secondary style)
+                    if st.button("撤銷", key=f"undo_{k}_{row['id']}", use_container_width=True):
+                        execute_db("UPDATE orders SET is_paid = 0 WHERE id = ?", (row['id'],))
+                        st.toast(f"↩️ 已撤銷: {row['name']}")
+                        st.rerun()
 
 # --- 6. 主頁面 ---
 st.title("🍱 點餐哦各位～")
@@ -305,19 +346,11 @@ with tab1:
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             
-            # === [改為 Pills] ===
             m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
-            
-            # === [關鍵優化] 客製化 Popover ===
-            # 使用 Popover 解決 "選項太多" + "下拉選單跳動" 的問題
             with st.popover("👇 選擇客製化", use_container_width=True):
                 st.caption("請選擇客製需求 (可複選)")
-                # 使用 Pills 在 Popover 裡面，不佔主畫面空間，且不會觸發鍵盤
                 m_other = st.pills("客製選項", custom_tags, key="m_other", selection_mode="multi", label_visibility="collapsed")
-            
-            # 顯示已選的客製內容 (Feedback)
-            if m_other:
-                st.caption(f"✅ 已選客製: {', '.join(m_other)}")
+            if m_other: st.caption(f"✅ 已選客製: {', '.join(m_other)}")
             
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_price_unit == 0:
@@ -341,7 +374,6 @@ with tab1:
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
             
-            # === [改為 Pills] ===
             d_size = st.pills("尺寸", ["L", "M", "XL"], default="L", key="d_size", selection_mode="single")
             d_ice = st.pills("冰塊", ice_levels, default=ice_levels[0], key="d_ice", selection_mode="single")
             d_sugar = st.pills("甜度", sugar_levels, default=sugar_levels[0], key="d_sugar", selection_mode="single")
@@ -361,5 +393,3 @@ with tab1:
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
 with tab3: render_payment_section()
-
-
