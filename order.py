@@ -16,7 +16,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS 美化
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.2", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.3", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -388,17 +388,13 @@ with tab1:
     with st.container(border=True):
         st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
         
-        # === [v7.5 修正] 使用 Popover + Pills 取代 Selectbox ===
-        # 解決手機端鍵盤彈出的問題
         with st.popover("👇 選擇名字", use_container_width=True):
             st.caption("請從下方名單選擇")
             user_name = st.pills("人員清單", colleagues_list, default=colleagues_list[0], selection_mode="single", label_visibility="collapsed")
         
-        # 顯示目前選定的名字 (Feedback)
         if user_name:
             st.info(f"Hi, **{user_name}**！ (如非本人，請點上方按鈕切換)")
         else:
-            # 防呆：如果沒有選到名字 (理論上 pills 預設會有值，但保險起見)
             st.warning("⚠️ 請選擇名字")
             st.stop()
 
@@ -431,15 +427,31 @@ with tab1:
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
+            
+            # === [v2.3 修正] 客製化 Popover：混合 Pills 與 Text Input ===
             with st.popover("👇 選擇客製化", use_container_width=True):
-                st.caption("請選擇客製需求 (可複選)")
+                st.caption("快速選項 (可複選)")
                 m_other = st.pills("客製選項", custom_tags, key="m_other", selection_mode="multi", label_visibility="collapsed")
-            if m_other: st.caption(f"✅ 已選客製: {', '.join(m_other)}")
+                st.markdown("---") # 分隔線
+                m_custom_manual = st.text_input("或是手動輸入", placeholder="例如：醬多、飯一半...", key="m_custom_manual")
+
+            # 邏輯處理：合併 pills 和 manual text
+            # 建立一個暫存清單來顯示在介面上，方便使用者確認
+            final_custom_list = m_other.copy() if m_other else []
+            if m_custom_manual:
+                final_custom_list.append(m_custom_manual)
+
+            if final_custom_list: st.caption(f"✅ 已選客製: {', '.join(final_custom_list)}")
+            
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
                     cust = f"{m_spicy}" if m_spicy != "無" else ""
-                    if m_other: cust += f" {','.join(m_other)}"
+                    # 將合併後的清單轉為字串存入 DB
+                    if final_custom_list: 
+                        prefix = " " if cust else ""
+                        cust += f"{prefix}{','.join(final_custom_list)}"
+                        
                     total_p = m_price_unit * m_qty
                     if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
                                   (user_name, "主餐", m_name, total_p, cust, m_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
@@ -468,4 +480,3 @@ with tab1:
 
 with tab2: render_stats_section(restaurant_name, drink_shop_name)
 with tab3: render_payment_section()
-
