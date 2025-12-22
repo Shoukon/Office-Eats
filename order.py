@@ -14,7 +14,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.5", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.6", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -91,6 +91,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS config_shop (
             category TEXT PRIMARY KEY, shop_name TEXT)''')
 
+        # 預設資料寫入
         c.execute("SELECT count(*) FROM config_colleagues")
         if c.fetchone()[0] == 0:
             c.executemany("INSERT INTO config_colleagues (name) VALUES (?)", [(n,) for n in DEFAULT_COLLEAGUES])
@@ -439,18 +440,17 @@ with tab1:
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
             
-            # [v2.9] 客製化防護邏輯
+            # 客製化區域
             current_tags = st.session_state.get("m_custom_tags", [])
             current_manual = st.session_state.get("m_custom_manual", "")
             display_list = current_tags.copy()
             if current_manual: display_list.append(current_manual)
             display_text = ", ".join(display_list) if display_list else "無"
             
-            # 視覺防護：有選則亮燈 (Primary)，沒選則灰階 (Secondary)
+            # 視覺與清空防護
             btn_type = "primary" if display_list else "secondary"
             btn_label = f"🎨 選擇客製化 (✅已選{len(display_list)}項)" if display_list else "🎨 選擇客製化 (目前: 無)"
             
-            # 使用 Columns 放置清除按鈕
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
                 if st.button(btn_label, type=btn_type, use_container_width=True):
@@ -461,7 +461,6 @@ with tab1:
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
             
-            # 顯示已選內容 (文字輔助)
             if display_list:
                 st.caption(f"ℹ️ 準備加入: {display_text}")
 
@@ -488,6 +487,7 @@ with tab1:
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
             
+            # 順序：尺寸 > 甜度 > 冰塊
             d_size = st.pills("尺寸", ["M", "L", "XL"], default="L", key="d_size", selection_mode="single")
             d_sugar = st.pills("甜度", sugar_levels, default=sugar_levels[0], key="d_sugar", selection_mode="single")
             d_ice = st.pills("冰塊", ice_levels, default=ice_levels[0], key="d_ice", selection_mode="single")
@@ -495,7 +495,7 @@ with tab1:
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    # [v2.9] 點飲料時，順便清空主餐客製化，防止殘留
+                    # 清空主餐客製化，防止跨區殘留
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
                     
