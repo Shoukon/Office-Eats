@@ -389,7 +389,7 @@ def custom_dialog(key_prefix, tag_options):
     new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
     
     st.markdown("---")
-    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：醬多、加珍珠...", key=f"{key_prefix}_manual_widget")
+    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：加珍珠...", key=f"{key_prefix}_manual_widget")
     if st.button("✅ 完成", use_container_width=True, type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
@@ -547,4 +547,5 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
+
 
