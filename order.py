@@ -76,7 +76,7 @@ DEFAULT_OPTIONS = {
     "ice": ["正常冰", "微冰", "少冰", "去冰", "完全去冰", "溫", "熱"],
     "sugar": ["正常糖", "少糖", "半糖", "微糖", "一分糖", "無糖"],
     "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"],     # 主餐客製
-    "drink_tags": ["珍珠", "椰果", "仙草", "布丁"]     # [v3.1 新增] 飲料客製
+    "drink_tags": ["加珍珠", "加椰果", "加仙草", "加布丁"]     # [v3.1 新增] 飲料客製
 }
 
 def init_db():
@@ -389,7 +389,7 @@ def custom_dialog(key_prefix, tag_options):
     new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
     
     st.markdown("---")
-    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：加珍珠...", key=f"{key_prefix}_manual_widget")
+    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：加茶凍...", key=f"{key_prefix}_manual_widget")
     if st.button("✅ 完成", use_container_width=True, type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
@@ -547,5 +547,6 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
+
 
 
