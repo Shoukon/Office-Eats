@@ -76,7 +76,7 @@ DEFAULT_OPTIONS = {
     "ice": ["正常冰", "微冰", "少冰", "去冰", "完全去冰", "溫", "熱"],
     "sugar": ["正常糖", "少糖", "半糖", "微糖", "一分糖", "無糖"],
     "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"],     # 主餐客製
-    "drink_tags": ["珍珠", "椰果", "仙草", "布丁", "分開裝"]     # [v3.1 新增] 飲料客製
+    "drink_tags": ["珍珠", "椰果", "仙草", "布丁"]     # [v3.1 新增] 飲料客製
 }
 
 def init_db():
@@ -547,3 +547,4 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
+
