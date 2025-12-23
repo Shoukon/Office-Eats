@@ -72,7 +72,7 @@ DEFAULT_COLLEAGUES = [
     "小昏", "阿文"
 ]
 DEFAULT_OPTIONS = {
-    "spicy": ["無", "微辣", "小辣", "中辣", "大辣"],
+    "spicy": ["微辣", "小辣", "中辣", "大辣"],
     "ice": ["正常冰", "微冰", "少冰", "去冰", "完全去冰", "溫", "熱"],
     "sugar": ["正常糖", "少糖", "半糖", "微糖", "一分糖", "無糖"],
     "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"],     # 主餐客製
@@ -547,6 +547,7 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
+
 
 
 
