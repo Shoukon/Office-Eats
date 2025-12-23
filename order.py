@@ -14,7 +14,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.6", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.7", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -75,7 +75,8 @@ DEFAULT_OPTIONS = {
     "spicy": ["不辣", "微辣", "小辣", "中辣", "大辣"],
     "ice": ["正常冰", "微冰", "少冰", "去冰", "完全去冰", "溫", "熱"],
     "sugar": ["正常糖", "少糖", "半糖", "微糖", "一分糖", "無糖"],
-    "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"]
+    "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"],     # 主餐客製
+    "drink_tags": ["珍珠", "椰果", "仙草", "布丁", "分開裝"]     # [v3.1 新增] 飲料客製
 }
 
 def init_db():
@@ -91,21 +92,16 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS config_shop (
             category TEXT PRIMARY KEY, shop_name TEXT)''')
 
-        # 預設資料寫入
-        c.execute("SELECT count(*) FROM config_colleagues")
-        if c.fetchone()[0] == 0:
-            c.executemany("INSERT INTO config_colleagues (name) VALUES (?)", [(n,) for n in DEFAULT_COLLEAGUES])
+        # 預設資料寫入 (使用 INSERT OR IGNORE 確保新舊資料相容)
+        for n in DEFAULT_COLLEAGUES:
+            c.execute("INSERT OR IGNORE INTO config_colleagues (name) VALUES (?)", (n,))
         
-        c.execute("SELECT count(*) FROM config_options")
-        if c.fetchone()[0] == 0:
-            for cat, options in DEFAULT_OPTIONS.items():
-                c.executemany("INSERT INTO config_options (category, option_value) VALUES (?, ?)", 
-                              [(cat, opt) for opt in options])
+        for cat, options in DEFAULT_OPTIONS.items():
+            for opt in options:
+                c.execute("INSERT OR IGNORE INTO config_options (category, option_value) VALUES (?, ?)", (cat, opt))
         
-        c.execute("SELECT count(*) FROM config_shop")
-        if c.fetchone()[0] == 0:
-            c.execute("INSERT INTO config_shop (category, shop_name) VALUES (?, ?)", ("main", "吃什麼？"))
-            c.execute("INSERT INTO config_shop (category, shop_name) VALUES (?, ?)", ("drink", "喝什麼？"))
+        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)", ("main", "吃什麼？"))
+        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)", ("drink", "喝什麼？"))
             
         conn.commit()
     finally:
@@ -178,14 +174,20 @@ init_db()
 # 讀取設定
 df_colleagues = get_config_list("config_colleagues", "name")
 colleagues_list = df_colleagues["name"].tolist() if not df_colleagues.empty else ["請新增人員"]
+
+# [v3.1] 分別讀取主餐與飲料的客製選項
 df_spicy = get_config_list("config_options", "option_value", "spicy")
 spicy_levels = ["無"] + df_spicy["option_value"].tolist()
 df_ice = get_config_list("config_options", "option_value", "ice")
 ice_levels = df_ice["option_value"].tolist()
 df_sugar = get_config_list("config_options", "option_value", "sugar")
 sugar_levels = df_sugar["option_value"].tolist()
+
 df_tags = get_config_list("config_options", "option_value", "tags")
-custom_tags = df_tags["option_value"].tolist()
+custom_tags_main = df_tags["option_value"].tolist() # 主餐客製
+
+df_drink_tags = get_config_list("config_options", "option_value", "drink_tags")
+custom_tags_drink = df_drink_tags["option_value"].tolist() # 飲料客製
 
 # ==========================================
 # 3. 側邊欄
@@ -242,7 +244,8 @@ with st.sidebar:
                 st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
             st.divider()
             st.write("**🛠️ 菜單選項**")
-            t1, t2, t3, t4 = st.tabs(["辣度", "冰塊", "甜度", "客製"])
+            # [v3.1] 將客製化拆分為「主餐客製」與「飲料客製」
+            t1, t2, t3, t4, t5 = st.tabs(["辣度", "冰塊", "甜度", "🍱主餐客製", "🥤飲料客製"])
             def render_opt(tab, cat, df, lbl):
                 with tab:
                     ed = st.data_editor(df, num_rows="dynamic",
@@ -254,7 +257,8 @@ with st.sidebar:
             render_opt(t1, "spicy", get_config_list("config_options", "option_value", "spicy"), "辣度")
             render_opt(t2, "ice", get_config_list("config_options", "option_value", "ice"), "冰塊")
             render_opt(t3, "sugar", get_config_list("config_options", "option_value", "sugar"), "甜度")
-            render_opt(t4, "tags", get_config_list("config_options", "option_value", "tags"), "標籤")
+            render_opt(t4, "tags", get_config_list("config_options", "option_value", "tags"), "主餐客製")
+            render_opt(t5, "drink_tags", get_config_list("config_options", "option_value", "drink_tags"), "飲料客製")
         elif pwd_input: st.error("🚫 密碼錯誤")
         else: st.caption("修改人員或菜單需驗證")
 
@@ -374,14 +378,18 @@ def login_dialog():
         st.session_state['user_name'] = selected
         st.rerun()
 
+# [v3.1] 升級版客製化 Dialog：支援傳入選項清單
 @st.dialog("🎨 選擇客製化")
-def custom_dialog(key_prefix):
+def custom_dialog(key_prefix, tag_options):
     st.caption("快速選項 (可複選)")
     current_tags = st.session_state.get(f"{key_prefix}_tags", [])
     current_manual = st.session_state.get(f"{key_prefix}_manual", "")
-    new_tags = st.pills("客製選項", custom_tags, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
+    
+    # 使用傳入的 tag_options 顯示按鈕
+    new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
+    
     st.markdown("---")
-    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：醬多、飯一半...", key=f"{key_prefix}_manual_widget")
+    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：醬多、加珍珠...", key=f"{key_prefix}_manual_widget")
     if st.button("✅ 完成", use_container_width=True, type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
@@ -389,8 +397,12 @@ def custom_dialog(key_prefix):
 
 # 初始化 Session State
 if 'user_name' not in st.session_state: st.session_state['user_name'] = None
+# 主餐客製化暫存
 if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
 if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'] = ""
+# [v3.1] 飲料客製化暫存
+if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = []
+if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
 
 with tab1:
     if st.button("🔄 刷新頁面 (手動同步)", type="secondary", use_container_width=True): st.rerun()
@@ -440,29 +452,27 @@ with tab1:
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
             
-            # 客製化區域
+            # 主餐客製化
             current_tags = st.session_state.get("m_custom_tags", [])
             current_manual = st.session_state.get("m_custom_manual", "")
             display_list = current_tags.copy()
             if current_manual: display_list.append(current_manual)
             display_text = ", ".join(display_list) if display_list else "無"
             
-            # 視覺與清空防護
             btn_type = "primary" if display_list else "secondary"
             btn_label = f"🎨 選擇客製化 (✅已選{len(display_list)}項)" if display_list else "🎨 選擇客製化 (目前: 無)"
             
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
-                if st.button(btn_label, type=btn_type, use_container_width=True):
-                    custom_dialog("m_custom")
+                if st.button(btn_label, type=btn_type, use_container_width=True, key="btn_m_custom"):
+                    custom_dialog("m_custom", custom_tags_main) # 傳入主餐選項
             with c_cust_clear:
-                if st.button("❌", help="清空客製選項", use_container_width=True):
+                if st.button("❌", help="清空主餐客製", use_container_width=True, key="clr_m_custom"):
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
             
-            if display_list:
-                st.caption(f"ℹ️ 準備加入: {display_text}")
+            if display_list: st.caption(f"ℹ️ 準備加入: {display_text}")
 
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
@@ -476,6 +486,9 @@ with tab1:
                                   (user_name, "主餐", m_name, total_p, cust, m_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
+                        # 清空飲料暫存 (跨區保護)
+                        st.session_state["d_custom_tags"] = []
+                        st.session_state["d_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} x{m_qty}"); st.rerun()
                 else: st.toast("⚠️ 請輸入主餐名稱")
 
@@ -487,22 +500,48 @@ with tab1:
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
             
-            # 順序：尺寸 > 甜度 > 冰塊
             d_size = st.pills("尺寸", ["M", "L", "XL"], default="L", key="d_size", selection_mode="single")
             d_sugar = st.pills("甜度", sugar_levels, default=sugar_levels[0], key="d_sugar", selection_mode="single")
             d_ice = st.pills("冰塊", ice_levels, default=ice_levels[0], key="d_ice", selection_mode="single")
             
+            # [v3.1] 飲料客製化 (與主餐結構相同)
+            d_current_tags = st.session_state.get("d_custom_tags", [])
+            d_current_manual = st.session_state.get("d_custom_manual", "")
+            d_display_list = d_current_tags.copy()
+            if d_current_manual: d_display_list.append(d_current_manual)
+            d_display_text = ", ".join(d_display_list) if d_display_list else "無"
+            
+            d_btn_type = "primary" if d_display_list else "secondary"
+            d_btn_label = f"🎨 選擇客製化 (✅已選{len(d_display_list)}項)" if d_display_list else "🎨 選擇客製化 (目前: 無)"
+
+            dc_btn, dc_clear = st.columns([4, 1])
+            with dc_btn:
+                if st.button(d_btn_label, type=d_btn_type, use_container_width=True, key="btn_d_custom"):
+                    custom_dialog("d_custom", custom_tags_drink) # 傳入飲料選項
+            with dc_clear:
+                if st.button("❌", help="清空飲料客製", use_container_width=True, key="clr_d_custom"):
+                    st.session_state["d_custom_tags"] = []
+                    st.session_state["d_custom_manual"] = ""
+                    st.rerun()
+
+            if d_display_list: st.caption(f"ℹ️ 準備加入: {d_display_text}")
+
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    # 清空主餐客製化，防止跨區殘留
-                    st.session_state["m_custom_tags"] = []
-                    st.session_state["m_custom_manual"] = ""
-                    
-                    cust = f"{d_size}/{d_sugar}/{d_ice}"
+                    # 組合字串：尺寸/甜度/冰塊 + [客製]
+                    base_cust = f"{d_size}/{d_sugar}/{d_ice}"
+                    if d_display_list:
+                        base_cust += f" {','.join(d_display_list)}"
+
                     total_p = d_price_unit * d_qty
                     if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                                  (user_name, "飲料", d_name, total_p, cust, d_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
+                                  (user_name, "飲料", d_name, total_p, base_cust, d_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
+                        st.session_state["d_custom_tags"] = []
+                        st.session_state["d_custom_manual"] = ""
+                        # 清空主餐暫存 (跨區保護)
+                        st.session_state["m_custom_tags"] = []
+                        st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{d_name} x{d_qty}"); st.rerun()
                 else: st.toast("⚠️ 請輸入飲料名稱")
 
