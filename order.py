@@ -75,8 +75,8 @@ DEFAULT_OPTIONS = {
     "spicy": ["微辣", "小辣", "中辣", "大辣"],
     "ice": ["正常冰", "微冰", "少冰", "去冰", "完全去冰", "溫", "熱"],
     "sugar": ["正常糖", "少糖", "半糖", "微糖", "一分糖", "無糖"],
-    "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"],     # 主餐客製
-    "drink_tags": ["加珍珠", "加椰果", "加仙草", "加布丁"]     # [v3.1 新增] 飲料客製
+    "tags": ["不要蔥", "不要蒜", "不要香菜", "飯少", "加飯"],
+    "drink_tags": ["加珍珠", "加椰果", "加仙草", "加布丁"]
 }
 
 def init_db():
@@ -92,7 +92,6 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS config_shop (
             category TEXT PRIMARY KEY, shop_name TEXT)''')
 
-        # 預設資料寫入 (使用 INSERT OR IGNORE 確保新舊資料相容)
         for n in DEFAULT_COLLEAGUES:
             c.execute("INSERT OR IGNORE INTO config_colleagues (name) VALUES (?)", (n,))
         
@@ -175,7 +174,6 @@ init_db()
 df_colleagues = get_config_list("config_colleagues", "name")
 colleagues_list = df_colleagues["name"].tolist() if not df_colleagues.empty else ["請新增人員"]
 
-# [v3.1] 分別讀取主餐與飲料的客製選項
 df_spicy = get_config_list("config_options", "option_value", "spicy")
 spicy_levels = ["無"] + df_spicy["option_value"].tolist()
 df_ice = get_config_list("config_options", "option_value", "ice")
@@ -184,10 +182,9 @@ df_sugar = get_config_list("config_options", "option_value", "sugar")
 sugar_levels = df_sugar["option_value"].tolist()
 
 df_tags = get_config_list("config_options", "option_value", "tags")
-custom_tags_main = df_tags["option_value"].tolist() # 主餐客製
-
+custom_tags_main = df_tags["option_value"].tolist() 
 df_drink_tags = get_config_list("config_options", "option_value", "drink_tags")
-custom_tags_drink = df_drink_tags["option_value"].tolist() # 飲料客製
+custom_tags_drink = df_drink_tags["option_value"].tolist()
 
 # ==========================================
 # 3. 側邊欄
@@ -244,7 +241,6 @@ with st.sidebar:
                 st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
             st.divider()
             st.write("**🛠️ 菜單選項**")
-            # [v3.1] 將客製化拆分為「主餐客製」與「飲料客製」
             t1, t2, t3, t4, t5 = st.tabs(["辣度", "冰塊", "甜度", "🍱主餐客製", "🥤飲料客製"])
             def render_opt(tab, cat, df, lbl):
                 with tab:
@@ -274,7 +270,10 @@ def render_stats_section():
     if df_all.empty: st.info("📦 目前尚無訂單，等待第一筆資料..."); return
 
     def show_stats_optimized(df_source, title, icon_class):
-        st.markdown(f'<div class="section-header {icon_class}">{title} ({len(df_source)})</div>', unsafe_allow_html=True)
+        # [v3.2] 計算該分類下的「餐點總數量」(Quantity Sum) 而不是訂單筆數 (Row Count)
+        total_qty = df_source['quantity'].sum() if not df_source.empty else 0
+        
+        st.markdown(f'<div class="section-header {icon_class}">{title} (共 {total_qty} 份)</div>', unsafe_allow_html=True)
         if df_source.empty: st.caption("無資料"); return
         c_sum, c_det = st.columns([1, 1.2])
         with c_sum:
@@ -378,16 +377,12 @@ def login_dialog():
         st.session_state['user_name'] = selected
         st.rerun()
 
-# [v3.1] 升級版客製化 Dialog：支援傳入選項清單
 @st.dialog("🎨 選擇客製化")
 def custom_dialog(key_prefix, tag_options):
     st.caption("快速選項 (可複選)")
     current_tags = st.session_state.get(f"{key_prefix}_tags", [])
     current_manual = st.session_state.get(f"{key_prefix}_manual", "")
-    
-    # 使用傳入的 tag_options 顯示按鈕
     new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
-    
     st.markdown("---")
     new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：加茶凍...", key=f"{key_prefix}_manual_widget")
     if st.button("✅ 完成", use_container_width=True, type="primary"):
@@ -397,10 +392,8 @@ def custom_dialog(key_prefix, tag_options):
 
 # 初始化 Session State
 if 'user_name' not in st.session_state: st.session_state['user_name'] = None
-# 主餐客製化暫存
 if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
 if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'] = ""
-# [v3.1] 飲料客製化暫存
 if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = []
 if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
 
@@ -465,7 +458,7 @@ with tab1:
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
                 if st.button(btn_label, type=btn_type, use_container_width=True, key="btn_m_custom"):
-                    custom_dialog("m_custom", custom_tags_main) # 傳入主餐選項
+                    custom_dialog("m_custom", custom_tags_main)
             with c_cust_clear:
                 if st.button("❌", help="清空主餐客製", use_container_width=True, key="clr_m_custom"):
                     st.session_state["m_custom_tags"] = []
@@ -486,7 +479,6 @@ with tab1:
                                   (user_name, "主餐", m_name, total_p, cust, m_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
-                        # 清空飲料暫存 (跨區保護)
                         st.session_state["d_custom_tags"] = []
                         st.session_state["d_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} x{m_qty}"); st.rerun()
@@ -504,7 +496,6 @@ with tab1:
             d_sugar = st.pills("甜度", sugar_levels, default=sugar_levels[0], key="d_sugar", selection_mode="single")
             d_ice = st.pills("冰塊", ice_levels, default=ice_levels[0], key="d_ice", selection_mode="single")
             
-            # [v3.1] 飲料客製化 (與主餐結構相同)
             d_current_tags = st.session_state.get("d_custom_tags", [])
             d_current_manual = st.session_state.get("d_custom_manual", "")
             d_display_list = d_current_tags.copy()
@@ -517,7 +508,7 @@ with tab1:
             dc_btn, dc_clear = st.columns([4, 1])
             with dc_btn:
                 if st.button(d_btn_label, type=d_btn_type, use_container_width=True, key="btn_d_custom"):
-                    custom_dialog("d_custom", custom_tags_drink) # 傳入飲料選項
+                    custom_dialog("d_custom", custom_tags_drink)
             with dc_clear:
                 if st.button("❌", help="清空飲料客製", use_container_width=True, key="clr_d_custom"):
                     st.session_state["d_custom_tags"] = []
@@ -529,7 +520,6 @@ with tab1:
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    # 組合字串：尺寸/甜度/冰塊 + [客製]
                     base_cust = f"{d_size}/{d_sugar}/{d_ice}"
                     if d_display_list:
                         base_cust += f" {','.join(d_display_list)}"
@@ -539,7 +529,6 @@ with tab1:
                                   (user_name, "飲料", d_name, total_p, base_cust, d_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
                         st.session_state["d_custom_tags"] = []
                         st.session_state["d_custom_manual"] = ""
-                        # 清空主餐暫存 (跨區保護)
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{d_name} x{d_qty}"); st.rerun()
@@ -547,8 +536,3 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
-
-
-
-
-
