@@ -14,7 +14,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.7", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.8", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -270,9 +270,7 @@ def render_stats_section():
     if df_all.empty: st.info("📦 目前尚無訂單，等待第一筆資料..."); return
 
     def show_stats_optimized(df_source, title, icon_class):
-        # [v3.2] 計算該分類下的「餐點總數量」(Quantity Sum) 而不是訂單筆數 (Row Count)
         total_qty = df_source['quantity'].sum() if not df_source.empty else 0
-        
         st.markdown(f'<div class="section-header {icon_class}">{title} (共 {total_qty} 份)</div>', unsafe_allow_html=True)
         if df_source.empty: st.caption("無資料"); return
         c_sum, c_det = st.columns([1, 1.2])
@@ -286,7 +284,11 @@ def render_stats_section():
                     with c_qty: st.markdown(f'<div class="qty-badge">x{row["總量"]}</div>', unsafe_allow_html=True)
                     with c_info:
                         st.markdown(f"**{idx + 1}. {row['餐點']}**")
-                        if row['客製']: st.caption(f"{row['客製']}")
+                        # [v3.3] 顯示優化：如果有客製，顯示比較好看的樣式
+                        if row['客製']: 
+                            # 將 | 替換成換行，或者保留原樣，這裡用顏色區分
+                            safe_custom = row['客製'].replace("|", "<span style='color:#FF4B4B; font-weight:bold'>|</span>")
+                            st.markdown(f"<span style='font-size:0.9em; color:gray'>{safe_custom}</span>", unsafe_allow_html=True)
             st.metric("該區總額", f"${df_source['price'].sum()}")
         with c_det:
             st.markdown("**📋 明細表 (核對用)**")
@@ -296,7 +298,10 @@ def render_stats_section():
                     st.markdown(f"**👤 {name}**")
                     for _, row in group.iterrows():
                         st.markdown(f"• {row['item_name']} (x{row['quantity']}) <span style='color:gray; font-size:0.9em'>${row['price']}</span>", unsafe_allow_html=True)
-                        if row['custom']: st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;└ {row['custom']}")
+                        if row['custom']: 
+                            # [v3.3] 明細表也同步優化顯示
+                            safe_custom = row['custom'].replace("|", " <span style='color:#FF4B4B; font-weight:bold'>|</span> ")
+                            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;└ {safe_custom}", unsafe_allow_html=True)
 
     show_stats_optimized(df_all[df_all['category'] == '主餐'], f"🍱 {r_name} (主餐)", "header-food")
     st.divider()
@@ -346,7 +351,10 @@ def _pay_logic_grouped(cat, df, k):
                     r1, r2 = st.columns([4, 1])
                     with r1: st.markdown(f"**{row['item_name']}** <span style='color:gray; font-size:0.85em'>x{row['quantity']}</span>", unsafe_allow_html=True)
                     with r2: st.markdown(f"<div style='text-align:right'>${row['price']}</div>", unsafe_allow_html=True)
-                    if row['custom']: st.caption(f"└ {row['custom']}")
+                    if row['custom']: 
+                         # [v3.3] 收款區同步優化
+                        safe_custom = row['custom'].replace("|", " <span style='color:#FF4B4B; font-weight:bold'>|</span> ")
+                        st.caption(f"└ {safe_custom}", unsafe_allow_html=True)
     else: st.success("👍 此區全數已付款！")
     paid_df = df[df['is_paid'] == 1]
     if not paid_df.empty:
@@ -384,7 +392,7 @@ def custom_dialog(key_prefix, tag_options):
     current_manual = st.session_state.get(f"{key_prefix}_manual", "")
     new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
     st.markdown("---")
-    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="例如：不要XXX...或是加XXX...", key=f"{key_prefix}_manual_widget")
+    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="如：不要XXX...或是加XXX...", key=f"{key_prefix}_manual_widget")
     if st.button("✅ 完成", use_container_width=True, type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
@@ -429,7 +437,10 @@ with tab1:
                     if st.button("⭕ 確認刪除", key=f"confirm_del_{row['id']}", type="primary"):
                         execute_db("DELETE FROM orders WHERE id = ?", (row['id'],))
                         st.toast("✅ 已刪除"); st.rerun()
-                st.caption(f"└ {row['custom']}")
+                # [v3.3] 待點清單顯示優化
+                if row['custom']:
+                    safe_custom = row['custom'].replace("|", " <span style='color:#FF4B4B; font-weight:bold'>|</span> ")
+                    st.caption(f"└ {safe_custom}", unsafe_allow_html=True)
     st.write("") 
 
     current_main_shop = new_main_shop
@@ -470,10 +481,13 @@ with tab1:
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
-                    cust = f"{m_spicy}" if m_spicy != "無" else ""
-                    if display_list: 
-                        prefix = " " if cust else ""
-                        cust += f"{prefix}{','.join(display_list)}"
+                    # [v3.3] 主餐字串格式優化：辣度 | 客製1, 客製2
+                    parts = []
+                    if m_spicy != "無": parts.append(m_spicy)
+                    if display_list: parts.append(", ".join(display_list))
+                    
+                    cust = " | ".join(parts) if parts else ""
+                    
                     total_p = m_price_unit * m_qty
                     if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
                                   (user_name, "主餐", m_name, total_p, cust, m_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
@@ -520,13 +534,17 @@ with tab1:
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    base_cust = f"{d_size}/{d_sugar}/{d_ice}"
+                    # [v3.3] 飲料字串格式優化：M/半/少 | 珍珠, 椰果
+                    base_config = f"{d_size}/{d_sugar}/{d_ice}"
+                    
+                    # 組合邏輯
+                    final_cust = base_config
                     if d_display_list:
-                        base_cust += f" {','.join(d_display_list)}"
+                        final_cust += f" | {', '.join(d_display_list)}"
 
                     total_p = d_price_unit * d_qty
                     if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                                  (user_name, "飲料", d_name, total_p, base_cust, d_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
+                                  (user_name, "飲料", d_name, total_p, final_cust, d_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
                         st.session_state["d_custom_tags"] = []
                         st.session_state["d_custom_manual"] = ""
                         st.session_state["m_custom_tags"] = []
@@ -536,4 +554,3 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
-
