@@ -14,7 +14,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (視覺核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.8", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v2.9", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -580,6 +580,7 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
+
 
 
 
