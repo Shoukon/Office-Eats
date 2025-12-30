@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 # ==========================================
-# 0. 系統設定區 (修改：整合 Secrets)
+# 0. 系統設定區
 # ==========================================
 # 嘗試從 secrets 讀取密碼，若無則使用預設
 try:
@@ -102,17 +102,17 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫邏輯 (修改：優先從 Secrets 載入預設值)
+# 2. 資料庫邏輯
 # ==========================================
 
 # 定義 Hardcoded 備用值 (當 Secrets 未設定時使用)
 BACKUP_COLLEAGUES = ["請設定Secrets或新增人員"]
 BACKUP_OPTIONS = {
     "spicy": ["微辣", "小辣", "中辣", "大辣"],
-    "ice": ["完全去冰", "去冰", "微冰", "少冰", "正常冰", "溫", "熱"],
-    "sugar": ["無糖", "一分糖", "微糖", "少糖", "半糖", "正常糖"],
-    "tags": ["不要蔥", "不要蒜", "不要薑", "不要香菜", "不要瓜類", "不要高麗菜", "不要紅蘿蔔", "不要小黃瓜", "不要三色豆"],
-    "drink_tags": ["加珍珠", "加椰果", "加仙草", "加布丁"]
+    "ice": ["去冰", "微冰", "少冰", "正常冰"],
+    "sugar": ["無糖", "微糖", "半糖", "全糖"],
+    "tags": ["不要蔥", "不要香菜"],
+    "drink_tags": ["加珍珠", "加椰果"]
 }
 
 def get_defaults_from_secrets():
@@ -290,9 +290,10 @@ with st.sidebar:
         if pwd_input == ADMIN_PASSWORD:
             st.success("🔓 已解鎖")
             st.write("**👥 人員名單**")
+            # 修正：use_container_width -> width="stretch"
             edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
                 column_config={"name": st.column_config.TextColumn("姓名", required=True)},
-                key="ed_col", use_container_width=True, hide_index=True)
+                key="ed_col", width="stretch", hide_index=True)
             if st.button("💾 儲存人員"):
                 update_config_list("config_colleagues", "name", edited_colleagues)
                 st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
@@ -301,9 +302,10 @@ with st.sidebar:
             t1, t2, t3, t4, t5 = st.tabs(["辣度", "冰塊", "甜度", "🍱主餐客製", "🥤飲料客製"])
             def render_opt(tab, cat, df, lbl):
                 with tab:
+                    # 修正：use_container_width -> width="stretch"
                     ed = st.data_editor(df, num_rows="dynamic",
                         column_config={"option_value": st.column_config.TextColumn(lbl, required=True)},
-                        key=f"ed_{cat}", use_container_width=True, hide_index=True)
+                        key=f"ed_{cat}", width="stretch", hide_index=True)
                     if st.button(f"儲存{lbl}", key=f"btn_{cat}"):
                         update_config_list("config_options", "option_value", ed, cat)
                         st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
@@ -408,7 +410,8 @@ def _pay_logic_grouped(cat, df, k):
                                 f'<span class="price-tag">${total_price}</span>'
                                 f'</div>', unsafe_allow_html=True)
                 with c_btn:
-                    if st.button("收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
+                    # 修正：use_container_width -> width="stretch"
+                    if st.button("收款", key=f"pay_{k}_{name}", width="stretch", type="primary"):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
                         st.toast(f"💰 已收: {name} (${total_price})"); st.rerun()
@@ -435,7 +438,8 @@ def _pay_logic_grouped(cat, df, k):
                 c1, c2 = st.columns([3, 1.2])
                 with c1: st.write(f"~~{name} (${total_price})~~") 
                 with c2:
-                    if st.button("撤銷", key=f"undo_{k}_{name}", use_container_width=True):
+                    # 修正：use_container_width -> width="stretch"
+                    if st.button("撤銷", key=f"undo_{k}_{name}", width="stretch"):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 0 WHERE id IN ({placeholders})", tuple(ids))
                         st.toast(f"↩️ 已撤銷: {name}"); st.rerun()
@@ -462,7 +466,8 @@ def custom_dialog(key_prefix, tag_options):
     new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
     st.markdown("---")
     new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="如：不要XXX...或是加XXX...", key=f"{key_prefix}_manual_widget")
-    if st.button("✅ 完成", use_container_width=True, type="primary"):
+    # 修正：use_container_width -> width="stretch"
+    if st.button("✅ 完成", width="stretch", type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
         st.rerun()
@@ -474,7 +479,8 @@ if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = 
 if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
 
 with tab1:
-    if st.button("🔄 刷新頁面 (手動同步)", type="secondary", use_container_width=True): st.rerun()
+    # 修正：use_container_width -> width="stretch"
+    if st.button("🔄 刷新頁面 (手動同步)", type="secondary", width="stretch"): st.rerun()
     
     with st.container(border=True):
         st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
@@ -483,7 +489,8 @@ with tab1:
             if st.session_state['user_name']: st.info(f"Hi, **{st.session_state['user_name']}**！")
             else: st.warning("⚠️ 尚未選擇名字")
         with c_btn:
-            if st.button("👤 登入/切換", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
+            # 修正：use_container_width -> width="stretch"
+            if st.button("👤 登入/切換", width="stretch", type="primary" if not st.session_state['user_name'] else "secondary"):
                 login_dialog()
         if not st.session_state['user_name']: st.stop()
 
@@ -534,17 +541,20 @@ with tab1:
             
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
-                if st.button(btn_label, type=btn_type, use_container_width=True, key="btn_m_custom"):
+                # 修正：use_container_width -> width="stretch"
+                if st.button(btn_label, type=btn_type, width="stretch", key="btn_m_custom"):
                     custom_dialog("m_custom", custom_tags_main)
             with c_cust_clear:
-                if st.button("❌", help="清空主餐客製", use_container_width=True, key="clr_m_custom"):
+                # 修正：use_container_width -> width="stretch"
+                if st.button("❌", help="清空主餐客製", width="stretch", key="clr_m_custom"):
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
             
             if display_list: st.caption(f"ℹ️ 準備加入: {display_text}")
 
-            if st.button("＋ 加入主餐", type="primary", use_container_width=True):
+            # 修正：use_container_width -> width="stretch"
+            if st.button("＋ 加入主餐", type="primary", width="stretch"):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
                     parts = []
@@ -585,17 +595,20 @@ with tab1:
 
             dc_btn, dc_clear = st.columns([4, 1])
             with dc_btn:
-                if st.button(d_btn_label, type=d_btn_type, use_container_width=True, key="btn_d_custom"):
+                # 修正：use_container_width -> width="stretch"
+                if st.button(d_btn_label, type=d_btn_type, width="stretch", key="btn_d_custom"):
                     custom_dialog("d_custom", custom_tags_drink)
             with dc_clear:
-                if st.button("❌", help="清空飲料客製", use_container_width=True, key="clr_d_custom"):
+                # 修正：use_container_width -> width="stretch"
+                if st.button("❌", help="清空飲料客製", width="stretch", key="clr_d_custom"):
                     st.session_state["d_custom_tags"] = []
                     st.session_state["d_custom_manual"] = ""
                     st.rerun()
 
             if d_display_list: st.caption(f"ℹ️ 準備加入: {d_display_text}")
 
-            if st.button("＋ 加入飲料", type="primary", use_container_width=True):
+            # 修正：use_container_width -> width="stretch"
+            if st.button("＋ 加入飲料", type="primary", width="stretch"):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
                     base_config = f"{d_size}/{d_sugar}/{d_ice}"
