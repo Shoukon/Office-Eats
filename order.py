@@ -6,9 +6,14 @@ import os
 from datetime import datetime
 
 # ==========================================
-# 0. 系統設定區
+# 0. 系統設定區 (修改：整合 Secrets)
 # ==========================================
-ADMIN_PASSWORD = "0678678"
+# 嘗試從 secrets 讀取密碼，若無則使用預設
+try:
+    ADMIN_PASSWORD = st.secrets["admin"]["password"]
+except Exception:
+    ADMIN_PASSWORD = "0678678"  # Fallback 預設密碼
+
 DB_FILE = "lunch.db"
 
 # ==========================================
@@ -97,19 +102,42 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫邏輯
+# 2. 資料庫邏輯 (修改：優先從 Secrets 載入預設值)
 # ==========================================
-DEFAULT_COLLEAGUES = [
-    "小昏", "阿文", "吳姐", "明穎", "阿莨", "妙莉", "歆媛", "白白", "小熊", "之之", 
-    "方方", "阿修", "欣蓉", "小安", "姷瑢", "Jeff", "小健"
-]
-DEFAULT_OPTIONS = {
+
+# 定義 Hardcoded 備用值 (當 Secrets 未設定時使用)
+BACKUP_COLLEAGUES = ["請設定Secrets或新增人員"]
+BACKUP_OPTIONS = {
     "spicy": ["微辣", "小辣", "中辣", "大辣"],
     "ice": ["完全去冰", "去冰", "微冰", "少冰", "正常冰", "溫", "熱"],
     "sugar": ["無糖", "一分糖", "微糖", "少糖", "半糖", "正常糖"],
     "tags": ["不要蔥", "不要蒜", "不要薑", "不要香菜", "不要瓜類", "不要高麗菜", "不要紅蘿蔔", "不要小黃瓜", "不要三色豆"],
     "drink_tags": ["加珍珠", "加椰果", "加仙草", "加布丁"]
 }
+
+def get_defaults_from_secrets():
+    """從 secrets 讀取預設設定，若失敗則回傳備用值"""
+    colleagues = BACKUP_COLLEAGUES
+    options = BACKUP_OPTIONS.copy()
+    
+    try:
+        if "default_settings" in st.secrets:
+            ds = st.secrets["default_settings"]
+            if "colleagues" in ds:
+                colleagues = ds["colleagues"]
+        
+        if "default_options" in st.secrets:
+            do = st.secrets["default_options"]
+            for key in options.keys():
+                if key in do:
+                    options[key] = do[key]
+    except Exception:
+        pass # 保持使用 BACKUP 值
+        
+    return colleagues, options
+
+# 獲取實際要使用的預設值
+DEFAULT_COLLEAGUES, DEFAULT_OPTIONS = get_defaults_from_secrets()
 
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -124,11 +152,15 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS config_shop (
             category TEXT PRIMARY KEY, shop_name TEXT)''')
 
+        # 這裡會使用從 Secrets 讀取到的 DEFAULT_COLLEAGUES
         for n in DEFAULT_COLLEAGUES:
             c.execute("INSERT OR IGNORE INTO config_colleagues (name) VALUES (?)", (n,))
+        
+        # 這裡會使用從 Secrets 讀取到的 DEFAULT_OPTIONS
         for cat, options in DEFAULT_OPTIONS.items():
             for opt in options:
                 c.execute("INSERT OR IGNORE INTO config_options (category, option_value) VALUES (?, ?)", (cat, opt))
+        
         c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)", ("main", "吃什麼？"))
         c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)", ("drink", "喝什麼？"))
         conn.commit()
@@ -254,6 +286,7 @@ with st.sidebar:
 
     with st.expander("🔧 進階設定"):
         pwd_input = st.text_input("輸入管理員密碼", type="password", key="admin_pwd")
+        # 修改：比對變數現在來自 Secrets
         if pwd_input == ADMIN_PASSWORD:
             st.success("🔓 已解鎖")
             st.write("**👥 人員名單**")
@@ -581,12 +614,3 @@ with tab1:
 
 with tab2: render_stats_section()
 with tab3: render_payment_section()
-
-
-
-
-
-
-
-
-
