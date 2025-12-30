@@ -12,14 +12,14 @@ from datetime import datetime
 try:
     ADMIN_PASSWORD = st.secrets["admin"]["password"]
 except Exception:
-    ADMIN_PASSWORD = "0678678"  # Fallback 預設密碼
+    ADMIN_PASSWORD = "3345678"  # Fallback 預設密碼
 
 DB_FILE = "lunch.db"
 
 # ==========================================
 # 1. 頁面設定與 CSS (視覺核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v2.9", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.0", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -290,7 +290,6 @@ with st.sidebar:
         if pwd_input == ADMIN_PASSWORD:
             st.success("🔓 已解鎖")
             st.write("**👥 人員名單**")
-            # 修正：use_container_width -> width="stretch"
             edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
                 column_config={"name": st.column_config.TextColumn("姓名", required=True)},
                 key="ed_col", width="stretch", hide_index=True)
@@ -302,7 +301,6 @@ with st.sidebar:
             t1, t2, t3, t4, t5 = st.tabs(["辣度", "冰塊", "甜度", "🍱主餐客製", "🥤飲料客製"])
             def render_opt(tab, cat, df, lbl):
                 with tab:
-                    # 修正：use_container_width -> width="stretch"
                     ed = st.data_editor(df, num_rows="dynamic",
                         column_config={"option_value": st.column_config.TextColumn(lbl, required=True)},
                         key=f"ed_{cat}", width="stretch", hide_index=True)
@@ -320,9 +318,17 @@ with st.sidebar:
 # ==========================================
 # 4. 統計看板 (Visual Optimized)
 # ==========================================
-@st.fragment(run_every=10)
+# 修正：移除 run_every=10，避免 "Fragment does not exist" 錯誤
+@st.fragment
 def render_stats_section():
-    st.markdown(f'<div class="refresh-text">🔄 自動刷新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+    # 新增手動刷新按鈕
+    c_ref_text, c_ref_btn = st.columns([6, 1])
+    with c_ref_text:
+        st.markdown(f'<div class="refresh-text">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+    with c_ref_btn:
+        if st.button("🔄", help="手動刷新", key="btn_refresh_stats"):
+            st.rerun()
+
     r_name = get_shop_name("main")
     d_name = get_shop_name("drink")
     df_all = get_db("SELECT * FROM orders")
@@ -345,7 +351,6 @@ def render_stats_section():
                     with c_qty: 
                         st.markdown(f'<div class="qty-badge">x{row["總量"]}</div>', unsafe_allow_html=True)
                     with c_info:
-                        # [v3.4] 使用 CSS Class 統一字體
                         st.markdown(f'<div class="card-title">{idx + 1}. {row["餐點"]}</div>', unsafe_allow_html=True)
                         if row['客製']: 
                             safe_custom = row['客製'].replace("|", "<span style='color:#FF4B4B; font-weight:bold'>|</span>")
@@ -360,7 +365,6 @@ def render_stats_section():
                 with st.container(border=True):
                     st.markdown(f'<div class="card-title">👤 {name}</div>', unsafe_allow_html=True)
                     for _, row in group.iterrows():
-                        # [v3.4] 統一字體大小，價格使用 monospace
                         item_str = f'<div class="card-text">• {row["item_name"]} (x{row["quantity"]}) &nbsp;<span class="price-tag-sm">${row["price"]}</span></div>'
                         st.markdown(item_str, unsafe_allow_html=True)
                         if row['custom']: 
@@ -374,9 +378,17 @@ def render_stats_section():
 # ==========================================
 # 5. 收款管理 (Visual Optimized)
 # ==========================================
-@st.fragment(run_every=10)
+# 修正：移除 run_every=10，避免 "Fragment does not exist" 錯誤
+@st.fragment
 def render_payment_section():
-    st.markdown(f'<div class="refresh-text">🔄 自動刷新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+    # 新增手動刷新按鈕
+    c_ref_text, c_ref_btn = st.columns([6, 1])
+    with c_ref_text:
+        st.markdown(f'<div class="refresh-text">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+    with c_ref_btn:
+        if st.button("🔄", help="手動刷新", key="btn_refresh_payment"):
+            st.rerun()
+
     df_all = get_db("SELECT * FROM orders")
     if df_all.empty: st.write("尚無訂單。"); return
     
@@ -402,7 +414,6 @@ def _pay_logic_grouped(cat, df, k):
             total_price = group['price'].sum()
             ids = group['id'].tolist()
             with st.container(border=True):
-                # [v3.4] 收款卡片排版優化：姓名與價格平行
                 c_header, c_btn = st.columns([3, 1.2])
                 with c_header:
                     st.markdown(f'<div style="display:flex; justify-content:space-between; align-items:center;">'
@@ -410,14 +421,12 @@ def _pay_logic_grouped(cat, df, k):
                                 f'<span class="price-tag">${total_price}</span>'
                                 f'</div>', unsafe_allow_html=True)
                 with c_btn:
-                    # 修正：use_container_width -> width="stretch"
                     if st.button("收款", key=f"pay_{k}_{name}", width="stretch", type="primary"):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
                         st.toast(f"💰 已收: {name} (${total_price})"); st.rerun()
                 st.markdown("---")
                 for _, row in group.iterrows():
-                    # [v3.4] 明細行距調整
                     r1, r2 = st.columns([4, 1])
                     with r1: 
                         st.markdown(f'<span class="card-text"><b>{row["item_name"]}</b> &nbsp;<span style="color:gray; font-size:0.9rem">x{row["quantity"]}</span></span>', unsafe_allow_html=True)
@@ -438,7 +447,6 @@ def _pay_logic_grouped(cat, df, k):
                 c1, c2 = st.columns([3, 1.2])
                 with c1: st.write(f"~~{name} (${total_price})~~") 
                 with c2:
-                    # 修正：use_container_width -> width="stretch"
                     if st.button("撤銷", key=f"undo_{k}_{name}", width="stretch"):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 0 WHERE id IN ({placeholders})", tuple(ids))
@@ -466,7 +474,6 @@ def custom_dialog(key_prefix, tag_options):
     new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
     st.markdown("---")
     new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="如：不要XXX...或是加XXX...", key=f"{key_prefix}_manual_widget")
-    # 修正：use_container_width -> width="stretch"
     if st.button("✅ 完成", width="stretch", type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
@@ -479,7 +486,6 @@ if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = 
 if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
 
 with tab1:
-    # 修正：use_container_width -> width="stretch"
     if st.button("🔄 刷新頁面 (手動同步)", type="secondary", width="stretch"): st.rerun()
     
     with st.container(border=True):
@@ -489,7 +495,6 @@ with tab1:
             if st.session_state['user_name']: st.info(f"Hi, **{st.session_state['user_name']}**！")
             else: st.warning("⚠️ 尚未選擇名字")
         with c_btn:
-            # 修正：use_container_width -> width="stretch"
             if st.button("👤 登入/切換", width="stretch", type="primary" if not st.session_state['user_name'] else "secondary"):
                 login_dialog()
         if not st.session_state['user_name']: st.stop()
@@ -502,7 +507,6 @@ with tab1:
         if my_orders.empty: st.caption("尚未點餐")
         else:
             for _, row in my_orders.iterrows():
-                # [v3.4] 自我清單也統一視覺
                 c1, c2, c3, c4 = st.columns([0.5, 2.5, 1, 1])
                 c1.write("🍱" if row['category'] == '主餐' else "🥤")
                 c2.markdown(f'<span class="card-text"><b>{row["item_name"]}</b> x{row["quantity"]}</span>', unsafe_allow_html=True)
@@ -541,11 +545,9 @@ with tab1:
             
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
-                # 修正：use_container_width -> width="stretch"
                 if st.button(btn_label, type=btn_type, width="stretch", key="btn_m_custom"):
                     custom_dialog("m_custom", custom_tags_main)
             with c_cust_clear:
-                # 修正：use_container_width -> width="stretch"
                 if st.button("❌", help="清空主餐客製", width="stretch", key="clr_m_custom"):
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
@@ -553,7 +555,6 @@ with tab1:
             
             if display_list: st.caption(f"ℹ️ 準備加入: {display_text}")
 
-            # 修正：use_container_width -> width="stretch"
             if st.button("＋ 加入主餐", type="primary", width="stretch"):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
@@ -595,11 +596,9 @@ with tab1:
 
             dc_btn, dc_clear = st.columns([4, 1])
             with dc_btn:
-                # 修正：use_container_width -> width="stretch"
                 if st.button(d_btn_label, type=d_btn_type, width="stretch", key="btn_d_custom"):
                     custom_dialog("d_custom", custom_tags_drink)
             with dc_clear:
-                # 修正：use_container_width -> width="stretch"
                 if st.button("❌", help="清空飲料客製", width="stretch", key="clr_d_custom"):
                     st.session_state["d_custom_tags"] = []
                     st.session_state["d_custom_manual"] = ""
@@ -607,7 +606,6 @@ with tab1:
 
             if d_display_list: st.caption(f"ℹ️ 準備加入: {d_display_text}")
 
-            # 修正：use_container_width -> width="stretch"
             if st.button("＋ 加入飲料", type="primary", width="stretch"):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
