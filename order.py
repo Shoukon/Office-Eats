@@ -19,7 +19,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v6.0", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.4", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
