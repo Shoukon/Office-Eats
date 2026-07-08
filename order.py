@@ -19,11 +19,11 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.4", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 移除全域字型強制綁定，讓系統自動選用最優質預設字體，徹底解決圖示變成亂碼的問題 */
+    /* 移除全域字型強制綁定，讓系統自動選用最優質預設字體 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
@@ -64,10 +64,9 @@ custom_css = """
     .list-qty { font-size: 1.15rem; font-weight: 800; color: #FF4B4B; }
     .list-price { font-size: 1.15rem; font-weight: 700; color: #7f8c8d; font-family: monospace; padding-top: 2px;}
 
-    /* 客製化文字統一樣式 */
+    /* 客製化文字統一樣式 (已移除紅線與左邊距) */
     .custom-text {
-        font-size: 0.95rem; color: #95a5a6; margin-top: 4px; 
-        padding-left: 8px; border-left: 3px solid #FF4B4B; line-height: 1.4;
+        font-size: 0.95rem; color: #95a5a6; margin-top: 4px; line-height: 1.4;
     }
 
     hr.soft-divider { border: 0; height: 1px; background: rgba(128,128,128,0.15); margin: 6px 0; }
@@ -275,7 +274,6 @@ with st.sidebar:
 # ==========================================
 @st.fragment
 def render_stats_section():
-    # 修正：利用垂直置中與 margin:0 讓更新文字與按鈕完美切齊
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
         st.markdown(f'<div style="text-align:right; color:gray; font-size:0.9rem; margin:0; padding:0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
@@ -302,7 +300,6 @@ def render_stats_section():
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
             
-            # 回歸原生 st.container() 由上往下顯示，安全不斷行，徹底解決破圖
             for idx, row in summary.iterrows():
                 with st.container(border=True):
                     c_qty, c_info = st.columns([1, 4], vertical_alignment="center")
@@ -312,7 +309,7 @@ def render_stats_section():
                         safe_name = html.escape(str(row["餐點"]))
                         st.markdown(f'<div style="font-size:1.15rem; font-weight:700; color:var(--text-color);">{idx + 1}. {safe_name}</div>', unsafe_allow_html=True)
                         if row['客製']: 
-                            safe_custom = html.escape(str(row['客製'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
+                            safe_custom = html.escape(str(row['客製']))
                             st.markdown(f'<div class="custom-text">{safe_custom}</div>', unsafe_allow_html=True)
             
             st.metric("該區總額", f"${df_source['price'].sum()}")
@@ -328,10 +325,9 @@ def render_stats_section():
                         safe_item = html.escape(str(row["item_name"]))
                         safe_cst_html = ""
                         if row['custom']: 
-                            safe_cst = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
+                            safe_cst = html.escape(str(row['custom']))
                             safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                             
-                        # 採用統一的對齊清單系統
                         st.markdown(
                             f'<div class="list-row">'
                             f'  <div class="list-col-left">'
@@ -403,7 +399,6 @@ def _pay_logic_grouped(cat, df, k):
             total_price = group['price'].sum()
             ids = group['id'].tolist()
             with st.container(border=True):
-                # 採用置中分欄讓文字與收款按鈕切齊
                 c_header, c_btn = st.columns([4, 1], vertical_alignment="center")
                 with c_header:
                     st.markdown(f'<div style="display:flex; align-items:center; font-size:1.15rem;">'
@@ -421,7 +416,7 @@ def _pay_logic_grouped(cat, df, k):
                     safe_item = html.escape(str(row["item_name"]))
                     safe_cst_html = ""
                     if row['custom']: 
-                        safe_cst = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
+                        safe_cst = html.escape(str(row['custom']))
                         safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                         
                     st.markdown(
@@ -525,7 +520,6 @@ with tab1:
         if my_orders.empty: st.caption("尚未點餐")
         else:
             for _, row in my_orders.iterrows():
-                # 使用置中參數確保修改與刪除按鈕完美的對齊文字
                 c_icon, c_info, c_btn1, c_btn2 = st.columns([0.4, 4.5, 0.7, 0.7], vertical_alignment="center")
                 
                 c_icon.markdown('<div style="font-size:1.4rem; text-align:center;">' + ("🍱" if row['category'] == '主餐' else "🥤") + '</div>', unsafe_allow_html=True)
@@ -533,7 +527,7 @@ with tab1:
                 safe_item_name = html.escape(str(row["item_name"]))
                 safe_cst_html = ""
                 if row['custom']:
-                    safe_custom = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
+                    safe_custom = html.escape(str(row['custom']))
                     safe_cst_html = f'<div class="custom-text">{safe_custom}</div>'
                 
                 c_info.markdown(
@@ -600,7 +594,7 @@ with tab1:
                     parts = []
                     if m_spicy != "無": parts.append(m_spicy)
                     if display_list: parts.append(", ".join(display_list))
-                    cust = " | ".join(parts) if parts else ""
+                    cust = ", ".join(parts) if parts else ""
                     
                     total_p = m_price_unit * m_qty
                     if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
@@ -652,7 +646,7 @@ with tab1:
                 elif d_name:
                     base_config = f"{d_size}/{d_sugar}/{d_ice}"
                     final_cust = base_config
-                    if d_display_list: final_cust += f" | {', '.join(d_display_list)}"
+                    if d_display_list: final_cust += f", {', '.join(d_display_list)}"
 
                     total_p = d_price_unit * d_qty
                     if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
