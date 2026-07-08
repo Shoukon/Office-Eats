@@ -19,15 +19,19 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (視覺核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.2", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.4", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 全域設定 */
+    /* 全域設定與字型優化 */
+    html, body, [class*="st-"], .stMarkdown, p, div {
+        font-family: 'Sarasa Gothic TC', 'Sarasa Fixed', sans-serif !important;
+    }
+
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-   /* Tabs 優化：告別刺眼大色塊，改用乾淨俐落的現代風 */
+    /* Tabs 優化：告別刺眼大色塊，改用乾淨俐落的現代風 */
     .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; padding-bottom: 5px; }
     .stTabs [data-baseweb="tab"] {
         height: 50px; border-radius: 8px;
@@ -556,7 +560,8 @@ with tab1:
                         
                 if row['custom']:
                     safe_custom = html.escape(str(row['custom'])).replace("|", " <span style='color:#FF4B4B; font-weight:bold'>|</span> ")
-                    st.caption(f"└ {safe_custom}", unsafe_allow_html=True)
+                    # 重大修正：將原先無法穩定轉譯 HTML 的 st.caption 換成 st.markdown 以修復錯誤
+                    st.markdown(f'<div class="card-meta">└ {safe_custom}</div>', unsafe_allow_html=True)
     st.write("") 
 
     current_main_shop = new_main_shop
