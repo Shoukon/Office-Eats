@@ -27,13 +27,24 @@ custom_css = """
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Tabs 優化 */
+   /* Tabs 優化：告別刺眼大色塊，改用乾淨俐落的現代風 */
     .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; padding-bottom: 5px; }
     .stTabs [data-baseweb="tab"] {
         height: 50px; border-radius: 8px;
-        background-color: var(--secondary-background-color); 
-        padding: 10px 20px; font-weight: 600; border: none; color: var(--text-color);
+        background-color: transparent; /* 未選取時保持乾淨透氣 */
+        padding: 10px 20px; font-weight: 600; border: none; color: gray;
         font-size: 1rem;
+        transition: all 0.2s ease-in-out;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: var(--text-color);
+        background-color: var(--secondary-background-color); /* 滑鼠懸停時的微光提示 */
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: var(--secondary-background-color) !important;
+        color: var(--text-color) !important;
+        border-bottom: 3px solid #4A90E2 !important; /* 俐落的科技藍底線 */
+        border-radius: 8px 8px 0 0 !important; /* 底部直角貼合底線 */
     }
     .stTabs [aria-selected="true"] { background-color: #FF4B4B !important; color: white !important; }
 
