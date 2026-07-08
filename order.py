@@ -17,17 +17,13 @@ except Exception:
 DB_FILE = "lunch.db"
 
 # ==========================================
-# 1. 頁面設定與 CSS (UI 與排版核心)
+# 1. 頁面設定與 CSS (純淨排版核心)
 # ==========================================
 st.set_page_config(page_title="點餐哦各位～ v3.3", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 修正：精準指定字型，避開影響 Streamlit 內建的圖示 (Material Icons) */
-    .stMarkdown, .stText, button, input, select, textarea {
-        font-family: 'Sarasa Gothic TC', 'Sarasa Fixed', 'Microsoft JhengHei', sans-serif;
-    }
-    
+    /* 移除全域字型強制綁定，讓系統自動選用最優質預設字體，徹底解決圖示變成亂碼的問題 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
@@ -38,23 +34,12 @@ custom_css = """
         padding-bottom: 0px; 
     }
     .stTabs [data-baseweb="tab"] {
-        height: 52px; 
-        border-radius: 8px 8px 0 0;
-        background-color: transparent; 
-        padding: 10px 16px; font-weight: 600; color: #7f8c8d;
-        font-size: 1.1rem;
-        transition: all 0.2s ease;
-        border: none;
+        height: 52px; border-radius: 8px 8px 0 0; background-color: transparent; 
+        padding: 10px 16px; font-weight: 600; color: #7f8c8d; font-size: 1.1rem;
+        transition: all 0.2s ease; border: none;
     }
-    .stTabs [data-baseweb="tab"]:hover {
-        color: var(--text-color);
-        background-color: rgba(128,128,128,0.05); 
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: transparent !important;
-        color: #4A90E2 !important;
-        border-bottom: 3px solid #4A90E2 !important; 
-    }
+    .stTabs [data-baseweb="tab"]:hover { background-color: rgba(128,128,128,0.05); color: var(--text-color); }
+    .stTabs [aria-selected="true"] { background-color: transparent !important; color: #4A90E2 !important; border-bottom: 3px solid #4A90E2 !important; }
 
     /* 區塊標頭設計 */
     .section-header {
@@ -67,34 +52,34 @@ custom_css = """
     .header-drink { background: linear-gradient(135deg, #008080, #2E8B57); }
     .header-money { background: linear-gradient(135deg, #DAA520, #B8860B); color: white;}
 
-    /* ========== 統一清單排版系統 (解決名稱與數量黏在一起的問題) ========== */
-    .list-row {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 8px 4px;
+    /* ========== 彙總表專屬卡片 (完美對齊設計) ========== */
+    .summary-card {
+        display: flex; align-items: stretch; background-color: var(--secondary-background-color);
+        border-radius: 8px; border: 1px solid rgba(128,128,128,0.2); margin-bottom: 10px;
+        overflow: hidden;
     }
-    .list-item-name { 
-        font-size: 1.15rem; font-weight: 700; color: var(--text-color);
+    .summary-qty {
+        background: rgba(255, 75, 75, 0.08); color: #FF4B4B; font-weight: 800; font-size: 1.6rem;
+        display: flex; align-items: center; justify-content: center; width: 75px;
+        border-right: 1px solid rgba(128,128,128,0.2); flex-shrink: 0;
     }
-    .list-item-qty { 
-        color: #FF4B4B; font-weight: 800; font-size: 1.15rem; margin-left: 16px; 
-    }
-    .list-item-price { 
-        color: #7f8c8d; font-size: 1.05rem; font-family: monospace; font-weight: 600;
-    }
-    .list-item-custom { 
-        font-size: 0.95rem; color: #95a5a6; margin-top: 2px; margin-bottom: 8px;
-        padding-left: 12px; border-left: 3px solid #FF4B4B; line-height: 1.4;
-    }
-    
-    /* 數量大圖章 (統計看板專用) */
-    .qty-badge {
-        font-size: 1.5rem; font-weight: 800; color: #FF4B4B; 
-        display: flex; align-items: center; justify-content: center; height: 100%;
-        border-right: 1px solid rgba(128,128,128,0.2);
-    }
+    .summary-info { padding: 12px 16px; display: flex; flex-direction: column; justify-content: center; }
+    .summary-name { font-size: 1.15rem; font-weight: 700; color: var(--text-color); line-height: 1.3;}
+    .summary-custom { font-size: 0.95rem; color: #95a5a6; margin-top: 6px; border-left: 3px solid #FF4B4B; padding-left: 8px; line-height: 1.4;}
 
-    hr.soft-divider { border: 0; height: 1px; background: rgba(128,128,128,0.2); margin: 6px 0; }
-    .refresh-text { color: gray; font-size: 0.85rem; margin-bottom: 5px; text-align: right;}
+    /* ========== 統一清單排版系統 (明細表/待點清單/收款表) ========== */
+    .list-row {
+        display: flex; justify-content: space-between; align-items: flex-start;
+        padding: 10px 12px; background: rgba(128,128,128,0.03); 
+        border-radius: 8px; margin-bottom: 8px; border: 1px solid rgba(128,128,128,0.1);
+    }
+    .list-col-left { display: flex; flex-direction: column; gap: 4px; }
+    .list-title-group { display: flex; align-items: center; flex-wrap: wrap; }
+    .list-name { font-size: 1.15rem; font-weight: 700; color: var(--text-color); margin-right: 20px; }
+    .list-qty { font-size: 1.15rem; font-weight: 800; color: #FF4B4B; }
+    .list-price { font-size: 1.15rem; font-weight: 700; color: #7f8c8d; font-family: monospace; padding-top: 2px;}
+
+    hr.soft-divider { border: 0; height: 1px; background: rgba(128,128,128,0.15); margin: 6px 0; }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -295,15 +280,17 @@ with st.sidebar:
         else: st.caption("修改人員或菜單需驗證")
 
 # ==========================================
-# 4. 統計看板 (套用新排版)
+# 4. 統計看板 (全新 Flexbox 重構排版)
 # ==========================================
 @st.fragment
 def render_stats_section():
-    c_ref_text, c_ref_btn = st.columns([8, 1])
+    # 修正對齊問題：利用 vertical_alignment="center" 強制垂直置中
+    c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
-        st.markdown(f'<div class="refresh-text">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+        # 強制移除 p 標籤的預設 margin，與按鈕達到絕對水平對齊
+        st.markdown(f'<p style="text-align: right; color: gray; font-size: 0.9rem; margin: 0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</p>', unsafe_allow_html=True)
     with c_ref_btn:
-        if st.button("🔄", help="手動刷新", key="btn_refresh_stats"): st.rerun()
+        if st.button("🔄", help="手動刷新", use_container_width=True, key="btn_refresh_stats"): st.rerun()
 
     r_name = get_shop_name("main")
     d_name = get_shop_name("drink")
@@ -324,17 +311,26 @@ def render_stats_section():
             st.markdown("**📦 彙總表 (店家用)**")
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
+            
+            # 使用純 HTML 卡片排版，徹底解決左右不對齊的問題
+            html_content = ""
             for idx, row in summary.iterrows():
-                with st.container(border=True):
-                    c_qty, c_info = st.columns([1, 4], vertical_alignment="center")
-                    with c_qty: 
-                        st.markdown(f'<div class="qty-badge">×{row["總量"]}</div>', unsafe_allow_html=True)
-                    with c_info:
-                        safe_name = html.escape(str(row["餐點"]))
-                        st.markdown(f'<div class="list-item-name" style="margin-top:4px;">{idx + 1}. {safe_name}</div>', unsafe_allow_html=True)
-                        if row['客製']: 
-                            safe_custom = html.escape(str(row['客製'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                            st.markdown(f'<div class="list-item-custom" style="border:none; padding-left:0; margin-top:2px;">{safe_custom}</div>', unsafe_allow_html=True)
+                safe_name = html.escape(str(row["餐點"]))
+                safe_custom_html = ""
+                if row['客製']: 
+                    safe_custom = html.escape(str(row['客製'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
+                    safe_custom_html = f'<div class="summary-custom">{safe_custom}</div>'
+                
+                html_content += f"""
+                <div class="summary-card">
+                    <div class="summary-qty">×{row['總量']}</div>
+                    <div class="summary-info">
+                        <div class="summary-name">{idx + 1}. {safe_name}</div>
+                        {safe_custom_html}
+                    </div>
+                </div>
+                """
+            st.markdown(html_content, unsafe_allow_html=True)
             st.metric("該區總額", f"${df_source['price'].sum()}")
 
         with c_det:
@@ -343,33 +339,39 @@ def render_stats_section():
             for name, group in grouped_by_person:
                 with st.container(border=True):
                     safe_user = html.escape(str(name))
-                    st.markdown(f'<div style="font-size:1.1rem; font-weight:700; margin-bottom:8px; color:var(--text-color);">👤 {safe_user}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="font-size:1.15rem; font-weight:700; margin-bottom:10px; color:var(--text-color);">👤 {safe_user}</div>', unsafe_allow_html=True)
                     for _, row in group.iterrows():
                         safe_item = html.escape(str(row["item_name"]))
-                        st.markdown(
-                            f'<div class="list-row" style="padding: 2px 0;">'
-                            f'  <div><span class="list-item-name">{safe_item}</span> <span class="list-item-qty">× {row["quantity"]}</span></div>'
-                            f'  <div class="list-item-price">${row["price"]}</div>'
-                            f'</div>', unsafe_allow_html=True
-                        )
+                        safe_cst_html = ""
                         if row['custom']: 
                             safe_cst = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                            st.markdown(f'<div class="list-item-custom">{safe_cst}</div>', unsafe_allow_html=True)
+                            safe_cst_html = f'<div class="summary-custom">{safe_cst}</div>'
+                            
+                        # 採用統一的 list-row 系統
+                        st.markdown(
+                            f'<div class="list-row">'
+                            f'  <div class="list-col-left">'
+                            f'    <div class="list-title-group"><span class="list-name">{safe_item}</span> <span class="list-qty">× {row["quantity"]}</span></div>'
+                            f'    {safe_cst_html}'
+                            f'  </div>'
+                            f'  <div class="list-price">${row["price"]}</div>'
+                            f'</div>', unsafe_allow_html=True
+                        )
 
     show_stats_optimized(df_all[df_all['category'] == '主餐'].copy(), f"🍱 {r_name} (主餐)", "header-food")
     st.divider()
     show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {d_name} (飲料)", "header-drink")
 
 # ==========================================
-# 5. 收款管理 (套用新排版)
+# 5. 收款管理 (排版同步優化)
 # ==========================================
 @st.fragment
 def render_payment_section():
-    c_ref_text, c_ref_btn = st.columns([8, 1])
+    c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
-        st.markdown(f'<div class="refresh-text">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+        st.markdown(f'<p style="text-align: right; color: gray; font-size: 0.9rem; margin: 0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</p>', unsafe_allow_html=True)
     with c_ref_btn:
-        if st.button("🔄", help="手動刷新", key="btn_refresh_payment"): st.rerun()
+        if st.button("🔄", help="手動刷新", use_container_width=True, key="btn_refresh_payment"): st.rerun()
 
     df_all = get_db("SELECT * FROM orders")
     if df_all.empty: st.write("尚無訂單。"); return
@@ -417,11 +419,12 @@ def _pay_logic_grouped(cat, df, k):
             total_price = group['price'].sum()
             ids = group['id'].tolist()
             with st.container(border=True):
-                c_header, c_btn = st.columns([4, 1])
+                # 採用置中分欄讓文字與收款按鈕切齊
+                c_header, c_btn = st.columns([4, 1], vertical_alignment="center")
                 with c_header:
-                    st.markdown(f'<div style="display:flex; align-items:center; height:100%; font-size:1.15rem;">'
+                    st.markdown(f'<div style="display:flex; align-items:center; font-size:1.15rem;">'
                                 f'<b>👤 {html.escape(str(name))}</b>'
-                                f'<span style="margin-left:16px; color:#FF4B4B; font-weight:700;">應收: ${total_price}</span>'
+                                f'<span style="margin-left:auto; color:#FF4B4B; font-weight:700;">應收: ${total_price}</span>'
                                 f'</div>', unsafe_allow_html=True)
                 with c_btn:
                     if st.button("收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
@@ -432,15 +435,20 @@ def _pay_logic_grouped(cat, df, k):
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
                 for _, row in group.iterrows():
                     safe_item = html.escape(str(row["item_name"]))
-                    st.markdown(
-                        f'<div class="list-row" style="padding: 2px 0;">'
-                        f'  <div><span class="list-item-name">{safe_item}</span> <span class="list-item-qty">× {row["quantity"]}</span></div>'
-                        f'  <div class="list-item-price">${row["price"]}</div>'
-                        f'</div>', unsafe_allow_html=True
-                    )
+                    safe_cst_html = ""
                     if row['custom']: 
                         safe_cst = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                        st.markdown(f'<div class="list-item-custom">{safe_cst}</div>', unsafe_allow_html=True)
+                        safe_cst_html = f'<div class="summary-custom">{safe_cst}</div>'
+                        
+                    st.markdown(
+                        f'<div class="list-row">'
+                        f'  <div class="list-col-left">'
+                        f'    <div class="list-title-group"><span class="list-name">{safe_item}</span> <span class="list-qty">× {row["quantity"]}</span></div>'
+                        f'    {safe_cst_html}'
+                        f'  </div>'
+                        f'  <div class="list-price">${row["price"]}</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
     else: st.success("👍 此區全數已付款！")
 
     paid_df = df[df['is_paid'] == 1]
@@ -450,7 +458,7 @@ def _pay_logic_grouped(cat, df, k):
             for name, group in grouped_paid:
                 total_price = group['price'].sum()
                 ids = group['id'].tolist()
-                c1, c2 = st.columns([4, 1])
+                c1, c2 = st.columns([4, 1], vertical_alignment="center")
                 with c1: st.write(f"~~{html.escape(str(name))} (${total_price})~~") 
                 with c2:
                     if st.button("撤銷", key=f"undo_{k}_{name}", use_container_width=True):
@@ -459,7 +467,7 @@ def _pay_logic_grouped(cat, df, k):
                         st.toast(f"↩️ 已撤銷: {name}"); st.rerun()
 
 # ==========================================
-# 6. 主畫面與 Dialogs 邏輯 (修正待點清單排版)
+# 6. 主畫面與 Dialogs 邏輯
 # ==========================================
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
@@ -516,7 +524,7 @@ with tab1:
     
     with st.container(border=True):
         st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
-        c_user, c_btn = st.columns([3, 1.5])
+        c_user, c_btn = st.columns([3, 1.5], vertical_alignment="center")
         with c_user:
             if st.session_state['user_name']: st.info(f"Hi, **{html.escape(str(st.session_state['user_name']))}**！")
             else: st.warning("⚠️ 尚未選擇名字")
@@ -533,32 +541,35 @@ with tab1:
         if my_orders.empty: st.caption("尚未點餐")
         else:
             for _, row in my_orders.iterrows():
-                # 重新設計的待點清單按鈕與資訊比例 (避免按鈕被擠壓)
+                # 使用置中參數確保修改與刪除按鈕完美的對齊文字
                 c_icon, c_info, c_btn1, c_btn2 = st.columns([0.4, 4.5, 0.7, 0.7], vertical_alignment="center")
                 
-                c_icon.write("🍱" if row['category'] == '主餐' else "🥤")
+                c_icon.markdown('<div style="font-size:1.4rem; text-align:center;">' + ("🍱" if row['category'] == '主餐' else "🥤") + '</div>', unsafe_allow_html=True)
                 
                 safe_item_name = html.escape(str(row["item_name"]))
+                safe_cst_html = ""
+                if row['custom']:
+                    safe_custom = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
+                    safe_cst_html = f'<div class="summary-custom">{safe_custom}</div>'
+                
                 c_info.markdown(
-                    f'<div style="display:flex; align-items:center; justify-content:space-between; width:100%;">'
-                    f'  <div><span class="list-item-name">{safe_item_name}</span> <span class="list-item-qty">× {row["quantity"]}</span></div>'
-                    f'  <div class="list-item-price" style="margin-right:15px;">${row["price"]}</div>'
+                    f'<div style="display:flex; flex-direction:column; justify-content:center;">'
+                    f'  <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">'
+                    f'    <div><span class="list-name">{safe_item_name}</span> <span class="list-qty">× {row["quantity"]}</span></div>'
+                    f'    <div class="list-price" style="margin-right:15px;">${row["price"]}</div>'
+                    f'  </div>'
+                    f'  {safe_cst_html}'
                     f'</div>', unsafe_allow_html=True
                 )
                 
-                if c_btn1.button("✏️", key=f"btn_edit_{row['id']}", help="修改餐點", use_container_width=True):
+                if c_btn1.button("✏️", key=f"btn_edit_{row['id']}", help="修改", use_container_width=True):
                     edit_order_dialog(row['id'], row['item_name'], row['price'], row['quantity'], row['custom'])
                 
                 with c_btn2.popover("🗑️", help="刪除", use_container_width=True):
                     st.write(f"刪除 **{safe_item_name}**？")
                     if st.button("⭕ 確認", key=f"confirm_del_{row['id']}", type="primary", use_container_width=True):
                         execute_db("DELETE FROM orders WHERE id = ?", (row['id'],))
-                        st.toast("✅ 已刪除")
-                        st.rerun()
-                        
-                if row['custom']:
-                    safe_custom = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                    st.markdown(f'<div class="list-item-custom" style="margin-left: 2.5rem;">{safe_custom}</div>', unsafe_allow_html=True)
+                        st.toast("✅ 已刪除"); st.rerun()
                 
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
     st.write("") 
