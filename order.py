@@ -46,7 +46,6 @@ custom_css = """
         border-bottom: 3px solid #4A90E2 !important; /* 俐落的科技藍底線 */
         border-radius: 8px 8px 0 0 !important; /* 底部直角貼合底線 */
     }
-    .stTabs [aria-selected="true"] { background-color: #FF4B4B !important; color: white !important; }
 
     /* 區塊標頭設計 */
     .section-header {
