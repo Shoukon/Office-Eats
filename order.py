@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 import time
 import os
-import html  # 用於防止使用者輸入導致 HTML/XSS 注入排版崩潰
+import html
 from datetime import datetime
 
 # ==========================================
@@ -19,23 +19,37 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (視覺核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.2", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 全域設定 */
+    /* 全域設定與字型優化 */
+    html, body, [class*="st-"], .stMarkdown, p, div {
+        font-family: 'Sarasa Gothic TC', 'Sarasa Fixed', sans-serif !important;
+    }
+    
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Tabs 優化 */
+    /* Tabs 優化：現代化簡約風格 */
     .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; padding-bottom: 5px; }
     .stTabs [data-baseweb="tab"] {
         height: 50px; border-radius: 8px;
-        background-color: var(--secondary-background-color); 
-        padding: 10px 20px; font-weight: 600; border: none; color: var(--text-color);
+        background-color: transparent; /* 未選取時保持乾淨透氣 */
+        padding: 10px 20px; font-weight: 600; border: none; color: gray;
         font-size: 1rem;
+        transition: all 0.2s ease-in-out;
     }
-    .stTabs [aria-selected="true"] { background-color: #FF4B4B !important; color: white !important; }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: var(--text-color);
+        background-color: var(--secondary-background-color); /* 滑鼠懸停時的微光提示 */
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: var(--secondary-background-color) !important;
+        color: var(--text-color) !important;
+        border-bottom: 3px solid #4A90E2 !important; /* 俐落的科技藍底線 */
+        border-radius: 8px 8px 0 0 !important; /* 底部直角貼合底線 */
+    }
 
     /* 區塊標頭設計 */
     .section-header {
@@ -75,7 +89,7 @@ custom_css = """
     .card-title { font-size: var(--text-main); font-weight: 700; margin-bottom: 2px; }
     .card-text { font-size: var(--text-body); font-weight: 400; display: flex; align-items: center; }
     .card-meta { font-size: var(--text-meta); color: gray; margin-top: 2px; line-height: 1.4; }
-    .price-tag { color: #FF4B4B; font-weight: 700; font-family: monospace; font-size: 1.1rem; }
+    .price-tag { color: #FF4B4B; font-weight: 700; font-size: 1.1rem; }
     .price-tag-sm { color: gray; font-size: 0.9rem; }
     
     /* 彙總表數量大圖章 */
@@ -288,7 +302,7 @@ with st.sidebar:
         else: st.caption("修改人員或菜單需驗證")
 
 # ==========================================
-# 4. 統計看板 (修復 Groupby 與 XSS 漏洞)
+# 4. 統計看板
 # ==========================================
 @st.fragment
 def render_stats_section():
@@ -308,7 +322,7 @@ def render_stats_section():
         st.markdown(f'<div class="section-header {icon_class}"><div>{title}</div><div>共 {total_qty} 份</div></div>', unsafe_allow_html=True)
         if df_source.empty: st.caption("無資料"); return
         
-        # 修正核心 Bug：在做 groupby 之前，確保名稱與客製化字串去除了手滑的多餘空白
+        # 清理多餘空白避免 groupby 分離
         df_source['item_name'] = df_source['item_name'].astype(str).str.strip()
         df_source['custom'] = df_source['custom'].astype(str).str.strip()
         
@@ -351,7 +365,7 @@ def render_stats_section():
     show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {d_name} (飲料)", "header-drink")
 
 # ==========================================
-# 5. 收款管理 (優化：主餐與飲料獨立雙軌收款)
+# 5. 收款管理 (主餐飲料獨立計算)
 # ==========================================
 @st.fragment
 def render_payment_section():
@@ -370,7 +384,7 @@ def render_payment_section():
     df_main = df_all[df_all['category'] == '主餐']
     df_drink = df_all[df_all['category'] == '飲料']
     
-    # 頂部進度看板一分為二，徹底分開獨立計算
+    # 頂部分流進度條
     c_main_prog, c_drink_prog = st.columns(2)
     
     with c_main_prog:
@@ -399,7 +413,6 @@ def render_payment_section():
 
     st.write("") 
     
-    # 動態變更頁籤標題
     t1, t2 = st.tabs([f"🍱 主餐明細 ({main_shop})", f"🥤 飲料明細 ({drink_shop})"])
     with t1: _pay_logic_grouped("主餐", df_main, "main")
     with t2: _pay_logic_grouped("飲料", df_drink, "drink")
@@ -480,7 +493,6 @@ def custom_dialog(key_prefix, tag_options):
         st.session_state[f"{key_prefix}_manual"] = new_manual
         st.rerun()
 
-# 新增：編輯餐點 Dialog
 @st.dialog("✏️ 編輯餐點")
 def edit_order_dialog(order_id, cur_name, cur_price_total, cur_qty, cur_custom):
     unit_price = cur_price_total // cur_qty if cur_qty > 0 else 0
@@ -534,7 +546,6 @@ with tab1:
                 c2.markdown(f'<span class="card-text"><b>{html.escape(row["item_name"])}</b> x{row["quantity"]}</span>', unsafe_allow_html=True)
                 c3.markdown(f'<span class="price-tag-sm">${row["price"]}</span>', unsafe_allow_html=True)
                 
-                # 編輯按鈕觸發
                 if c4.button("✏️", key=f"btn_edit_{row['id']}", help="修改這筆餐點", use_container_width=True):
                     edit_order_dialog(row['id'], row['item_name'], row['price'], row['quantity'], row['custom'])
                 
@@ -557,7 +568,7 @@ with tab1:
         st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(current_main_shop)} (主餐)</div></div>', unsafe_allow_html=True)
         with st.container(border=True):
             m_name_raw = st.text_input("主餐名稱", placeholder="輸入餐點...", key="m_name")
-            m_name = m_name_raw.strip()  # 修正：寫入庫前去首尾空白
+            m_name = m_name_raw.strip()
             
             cp, cq = st.columns(2)
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
@@ -607,7 +618,7 @@ with tab1:
         st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(current_drink_shop)} (飲料)</div></div>', unsafe_allow_html=True)
         with st.container(border=True):
             d_name_raw = st.text_input("飲料名稱", placeholder="輸入飲料...", key="d_name")
-            d_name = d_name_raw.strip()  # 修正：寫入庫前去首尾空白
+            d_name = d_name_raw.strip()
             
             cp, cq = st.columns(2)
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
