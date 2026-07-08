@@ -19,7 +19,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v6.0", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -52,21 +52,6 @@ custom_css = """
     .header-drink { background: linear-gradient(135deg, #008080, #2E8B57); }
     .header-money { background: linear-gradient(135deg, #DAA520, #B8860B); color: white;}
 
-    /* ========== 彙總表專屬卡片 (完美對齊設計) ========== */
-    .summary-card {
-        display: flex; align-items: stretch; background-color: var(--secondary-background-color);
-        border-radius: 8px; border: 1px solid rgba(128,128,128,0.2); margin-bottom: 10px;
-        overflow: hidden;
-    }
-    .summary-qty {
-        background: rgba(255, 75, 75, 0.08); color: #FF4B4B; font-weight: 800; font-size: 1.6rem;
-        display: flex; align-items: center; justify-content: center; width: 75px;
-        border-right: 1px solid rgba(128,128,128,0.2); flex-shrink: 0;
-    }
-    .summary-info { padding: 12px 16px; display: flex; flex-direction: column; justify-content: center; }
-    .summary-name { font-size: 1.15rem; font-weight: 700; color: var(--text-color); line-height: 1.3;}
-    .summary-custom { font-size: 0.95rem; color: #95a5a6; margin-top: 6px; border-left: 3px solid #FF4B4B; padding-left: 8px; line-height: 1.4;}
-
     /* ========== 統一清單排版系統 (明細表/待點清單/收款表) ========== */
     .list-row {
         display: flex; justify-content: space-between; align-items: flex-start;
@@ -78,6 +63,12 @@ custom_css = """
     .list-name { font-size: 1.15rem; font-weight: 700; color: var(--text-color); margin-right: 20px; }
     .list-qty { font-size: 1.15rem; font-weight: 800; color: #FF4B4B; }
     .list-price { font-size: 1.15rem; font-weight: 700; color: #7f8c8d; font-family: monospace; padding-top: 2px;}
+
+    /* 客製化文字統一樣式 */
+    .custom-text {
+        font-size: 0.95rem; color: #95a5a6; margin-top: 4px; 
+        padding-left: 8px; border-left: 3px solid #FF4B4B; line-height: 1.4;
+    }
 
     hr.soft-divider { border: 0; height: 1px; background: rgba(128,128,128,0.15); margin: 6px 0; }
 </style>
@@ -280,15 +271,14 @@ with st.sidebar:
         else: st.caption("修改人員或菜單需驗證")
 
 # ==========================================
-# 4. 統計看板 (全新 Flexbox 重構排版)
+# 4. 統計看板
 # ==========================================
 @st.fragment
 def render_stats_section():
-    # 修正對齊問題：利用 vertical_alignment="center" 強制垂直置中
+    # 修正：利用垂直置中與 margin:0 讓更新文字與按鈕完美切齊
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
-        # 強制移除 p 標籤的預設 margin，與按鈕達到絕對水平對齊
-        st.markdown(f'<p style="text-align: right; color: gray; font-size: 0.9rem; margin: 0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</p>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:right; color:gray; font-size:0.9rem; margin:0; padding:0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
     with c_ref_btn:
         if st.button("🔄", help="手動刷新", use_container_width=True, key="btn_refresh_stats"): st.rerun()
 
@@ -312,25 +302,19 @@ def render_stats_section():
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
             
-            # 使用純 HTML 卡片排版，徹底解決左右不對齊的問題
-            html_content = ""
+            # 回歸原生 st.container() 由上往下顯示，安全不斷行，徹底解決破圖
             for idx, row in summary.iterrows():
-                safe_name = html.escape(str(row["餐點"]))
-                safe_custom_html = ""
-                if row['客製']: 
-                    safe_custom = html.escape(str(row['客製'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                    safe_custom_html = f'<div class="summary-custom">{safe_custom}</div>'
-                
-                html_content += f"""
-                <div class="summary-card">
-                    <div class="summary-qty">×{row['總量']}</div>
-                    <div class="summary-info">
-                        <div class="summary-name">{idx + 1}. {safe_name}</div>
-                        {safe_custom_html}
-                    </div>
-                </div>
-                """
-            st.markdown(html_content, unsafe_allow_html=True)
+                with st.container(border=True):
+                    c_qty, c_info = st.columns([1, 4], vertical_alignment="center")
+                    with c_qty: 
+                        st.markdown(f'<div style="font-size:1.6rem; font-weight:800; color:#FF4B4B; text-align:center;">×{row["總量"]}</div>', unsafe_allow_html=True)
+                    with c_info:
+                        safe_name = html.escape(str(row["餐點"]))
+                        st.markdown(f'<div style="font-size:1.15rem; font-weight:700; color:var(--text-color);">{idx + 1}. {safe_name}</div>', unsafe_allow_html=True)
+                        if row['客製']: 
+                            safe_custom = html.escape(str(row['客製'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
+                            st.markdown(f'<div class="custom-text">{safe_custom}</div>', unsafe_allow_html=True)
+            
             st.metric("該區總額", f"${df_source['price'].sum()}")
 
         with c_det:
@@ -345,9 +329,9 @@ def render_stats_section():
                         safe_cst_html = ""
                         if row['custom']: 
                             safe_cst = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                            safe_cst_html = f'<div class="summary-custom">{safe_cst}</div>'
+                            safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                             
-                        # 採用統一的 list-row 系統
+                        # 採用統一的對齊清單系統
                         st.markdown(
                             f'<div class="list-row">'
                             f'  <div class="list-col-left">'
@@ -363,13 +347,13 @@ def render_stats_section():
     show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {d_name} (飲料)", "header-drink")
 
 # ==========================================
-# 5. 收款管理 (排版同步優化)
+# 5. 收款管理 
 # ==========================================
 @st.fragment
 def render_payment_section():
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
-        st.markdown(f'<p style="text-align: right; color: gray; font-size: 0.9rem; margin: 0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</p>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:right; color:gray; font-size:0.9rem; margin:0; padding:0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
     with c_ref_btn:
         if st.button("🔄", help="手動刷新", use_container_width=True, key="btn_refresh_payment"): st.rerun()
 
@@ -438,7 +422,7 @@ def _pay_logic_grouped(cat, df, k):
                     safe_cst_html = ""
                     if row['custom']: 
                         safe_cst = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                        safe_cst_html = f'<div class="summary-custom">{safe_cst}</div>'
+                        safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                         
                     st.markdown(
                         f'<div class="list-row">'
@@ -550,7 +534,7 @@ with tab1:
                 safe_cst_html = ""
                 if row['custom']:
                     safe_custom = html.escape(str(row['custom'])).replace("|", "<span style='color:#FF4B4B; margin: 0 4px;'>|</span>")
-                    safe_cst_html = f'<div class="summary-custom">{safe_custom}</div>'
+                    safe_cst_html = f'<div class="custom-text">{safe_custom}</div>'
                 
                 c_info.markdown(
                     f'<div style="display:flex; flex-direction:column; justify-content:center;">'
