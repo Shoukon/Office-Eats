@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 import time
 import os
-import html  # 新增：用於防止 HTML Injection
+import html  # 用於防止使用者輸入導致 HTML/XSS 注入排版崩潰
 from datetime import datetime
 
 # ==========================================
@@ -12,20 +12,22 @@ from datetime import datetime
 try:
     ADMIN_PASSWORD = st.secrets["admin"]["password"]
 except Exception:
-    ADMIN_PASSWORD = "3345678" 
+    ADMIN_PASSWORD = "3345678"  # Fallback 預設密碼
 
 DB_FILE = "lunch.db"
 
 # ==========================================
-# 1. 頁面設定與 CSS 
+# 1. 頁面設定與 CSS (視覺核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.1", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.2", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
+    /* 全域設定 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
+    /* Tabs 優化 */
     .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; padding-bottom: 5px; }
     .stTabs [data-baseweb="tab"] {
         height: 50px; border-radius: 8px;
@@ -35,6 +37,7 @@ custom_css = """
     }
     .stTabs [aria-selected="true"] { background-color: #FF4B4B !important; color: white !important; }
 
+    /* 區塊標頭設計 */
     .section-header {
         padding: 12px 18px; border-radius: 8px; margin-bottom: 15px;
         color: white; font-weight: 700; font-size: 1.15rem;
@@ -54,23 +57,28 @@ custom_css = """
     .header-drink { background: var(--drink-gradient); }
     .header-money { background: var(--money-gradient); color: white;}
 
+    /* Metric 卡片優化 */
     div[data-testid="stMetric"] {
         background-color: var(--secondary-background-color);
         border: 1px solid rgba(255, 255, 255, 0.1); padding: 15px; border-radius: 8px;
     }
 
+    /* 按鈕優化 */
     div.stButton > button[kind="primary"] { font-weight: 600; font-size: 1rem; }
     
+    /* 行動裝置優化 */
     @media screen and (max-width: 768px) {
         input, select, textarea { font-size: 16px !important; }
     }
 
+    /* 訂單卡片文字排版 */
     .card-title { font-size: var(--text-main); font-weight: 700; margin-bottom: 2px; }
     .card-text { font-size: var(--text-body); font-weight: 400; display: flex; align-items: center; }
     .card-meta { font-size: var(--text-meta); color: gray; margin-top: 2px; line-height: 1.4; }
     .price-tag { color: #FF4B4B; font-weight: 700; font-family: monospace; font-size: 1.1rem; }
     .price-tag-sm { color: gray; font-size: 0.9rem; }
     
+    /* 彙總表數量大圖章 */
     .qty-badge {
         font-size: 1.4rem; font-weight: 800; color: #FF4B4B; 
         text-align: center; width: 100%;
@@ -85,7 +93,7 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫邏輯 (修復 Read Lock)
+# 2. 資料庫邏輯區
 # ==========================================
 BACKUP_COLLEAGUES = ["請設定Secrets或新增人員"]
 BACKUP_OPTIONS = {
@@ -102,13 +110,11 @@ def get_defaults_from_secrets():
     try:
         if "default_settings" in st.secrets:
             ds = st.secrets["default_settings"]
-            if "colleagues" in ds:
-                colleagues = ds["colleagues"]
+            if "colleagues" in ds: colleagues = ds["colleagues"]
         if "default_options" in st.secrets:
             do = st.secrets["default_options"]
             for key in options.keys():
-                if key in do:
-                    options[key] = do[key]
+                if key in do: options[key] = do[key]
     except Exception: pass
     return colleagues, options
 
@@ -129,7 +135,6 @@ def init_db():
 
         for n in DEFAULT_COLLEAGUES:
             c.execute("INSERT OR IGNORE INTO config_colleagues (name) VALUES (?)", (n,))
-        
         for cat, options in DEFAULT_OPTIONS.items():
             for opt in options:
                 c.execute("INSERT OR IGNORE INTO config_options (category, option_value) VALUES (?, ?)", (cat, opt))
@@ -156,7 +161,6 @@ def execute_db(query, params=()):
     st.error("⚠️ 系統忙碌 (Database Locked)，請稍後再試")
     return False
 
-# 修復：加入 Retry 機制防止讀取時出現空視窗
 def get_db(query, params=()):
     max_retries = 3
     for _ in range(max_retries):
@@ -214,7 +218,7 @@ df_drink_tags = get_config_list("config_options", "option_value", "drink_tags")
 custom_tags_drink = df_drink_tags["option_value"].tolist()
 
 # ==========================================
-# 3. 側邊欄
+# 3. 側邊欄管理
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 開團管理")
@@ -304,7 +308,7 @@ def render_stats_section():
         st.markdown(f'<div class="section-header {icon_class}"><div>{title}</div><div>共 {total_qty} 份</div></div>', unsafe_allow_html=True)
         if df_source.empty: st.caption("無資料"); return
         
-        # 修復：在做 groupby 之前，確保名稱與客製化字串去除了隱形空白
+        # 修正核心 Bug：在做 groupby 之前，確保名稱與客製化字串去除了手滑的多餘空白
         df_source['item_name'] = df_source['item_name'].astype(str).str.strip()
         df_source['custom'] = df_source['custom'].astype(str).str.strip()
         
@@ -320,7 +324,7 @@ def render_stats_section():
                     with c_qty: 
                         st.markdown(f'<div class="qty-badge">x{row["總量"]}</div>', unsafe_allow_html=True)
                     with c_info:
-                        safe_name = html.escape(str(row["餐點"])) # 防護 XSS
+                        safe_name = html.escape(str(row["餐點"]))
                         st.markdown(f'<div class="card-title">{idx + 1}. {safe_name}</div>', unsafe_allow_html=True)
                         if row['客製']: 
                             safe_custom = html.escape(str(row['客製'])).replace("|", "<span style='color:#FF4B4B; font-weight:bold'>|</span>")
@@ -347,7 +351,7 @@ def render_stats_section():
     show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {d_name} (飲料)", "header-drink")
 
 # ==========================================
-# 5. 收款管理 (修復 Progress math & XSS)
+# 5. 收款管理 (優化：主餐與飲料獨立雙軌收款)
 # ==========================================
 @st.fragment
 def render_payment_section():
@@ -360,16 +364,45 @@ def render_payment_section():
     df_all = get_db("SELECT * FROM orders")
     if df_all.empty: st.write("尚無訂單。"); return
     
-    total = df_all['price'].sum()
-    paid = df_all[df_all['is_paid'] == 1]['price'].sum()
-    prog = min(1.0, paid / total) if total > 0 else 0.0 # 修復：使用 min 防止異常大於 1
-    st.markdown(f'<div class="section-header header-money"><div>💰 收款進度</div><div>${paid} / ${total}</div></div>', unsafe_allow_html=True)
-    st.progress(prog)
-    if prog >= 1.0 and total > 0: st.success("🎉 太棒了！款項已全數收齊！")
+    main_shop = get_shop_name("main")
+    drink_shop = get_shop_name("drink")
     
-    t1, t2 = st.tabs(["🍱 主餐收款", "🥤 飲料收款"])
-    with t1: _pay_logic_grouped("主餐", df_all[df_all['category'] == '主餐'], "main")
-    with t2: _pay_logic_grouped("飲料", df_all[df_all['category'] == '飲料'], "drink")
+    df_main = df_all[df_all['category'] == '主餐']
+    df_drink = df_all[df_all['category'] == '飲料']
+    
+    # 頂部進度看板一分為二，徹底分開獨立計算
+    c_main_prog, c_drink_prog = st.columns(2)
+    
+    with c_main_prog:
+        total_m = df_main['price'].sum() if not df_main.empty else 0
+        paid_m = df_main[df_main['is_paid'] == 1]['price'].sum() if not df_main.empty else 0
+        prog_m = min(1.0, paid_m / total_m) if total_m > 0 else 0.0
+        
+        st.markdown(f'<div class="section-header header-food" style="margin-bottom:8px;">'
+                    f'<div>🍱 {html.escape(main_shop)} 收款</div>'
+                    f'<div>${paid_m} / ${total_m}</div>'
+                    f'</div>', unsafe_allow_html=True)
+        st.progress(prog_m)
+        if prog_m >= 1.0 and total_m > 0: st.caption("🎉 主餐款項已全數收齊！")
+
+    with c_drink_prog:
+        total_d = df_drink['price'].sum() if not df_drink.empty else 0
+        paid_d = df_drink[df_drink['is_paid'] == 1]['price'].sum() if not df_drink.empty else 0
+        prog_d = min(1.0, paid_d / total_d) if total_d > 0 else 0.0
+        
+        st.markdown(f'<div class="section-header header-drink" style="margin-bottom:8px;">'
+                    f'<div>🥤 {html.escape(drink_shop)} 收款</div>'
+                    f'<div>${paid_d} / ${total_d}</div>'
+                    f'</div>', unsafe_allow_html=True)
+        st.progress(prog_d)
+        if prog_d >= 1.0 and total_d > 0: st.caption("🎉 飲料款項已全數收齊！")
+
+    st.write("") 
+    
+    # 動態變更頁籤標題
+    t1, t2 = st.tabs([f"🍱 主餐明細 ({main_shop})", f"🥤 飲料明細 ({drink_shop})"])
+    with t1: _pay_logic_grouped("主餐", df_main, "main")
+    with t2: _pay_logic_grouped("飲料", df_drink, "drink")
 
 def _pay_logic_grouped(cat, df, k):
     if df.empty: st.caption("無資料"); return
@@ -421,7 +454,7 @@ def _pay_logic_grouped(cat, df, k):
                         st.toast(f"↩️ 已撤銷: {name}"); st.rerun()
 
 # ==========================================
-# 6. 主畫面 (新增編輯 Dialog)
+# 6. 主畫面與 Dialogs 邏輯
 # ==========================================
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
@@ -447,7 +480,7 @@ def custom_dialog(key_prefix, tag_options):
         st.session_state[f"{key_prefix}_manual"] = new_manual
         st.rerun()
 
-# 新增：編輯訂單的專屬 Dialog
+# 新增：編輯餐點 Dialog
 @st.dialog("✏️ 編輯餐點")
 def edit_order_dialog(order_id, cur_name, cur_price_total, cur_qty, cur_custom):
     unit_price = cur_price_total // cur_qty if cur_qty > 0 else 0
@@ -462,7 +495,6 @@ def edit_order_dialog(order_id, cur_name, cur_price_total, cur_qty, cur_custom):
         if not new_name:
             st.error("餐點名稱不能為空")
             return
-        
         new_total = new_unit_price * new_qty
         execute_db("UPDATE orders SET item_name=?, price=?, quantity=?, custom=? WHERE id=?",
                    (new_name, new_total, new_qty, new_custom, order_id))
@@ -497,12 +529,12 @@ with tab1:
         if my_orders.empty: st.caption("尚未點餐")
         else:
             for _, row in my_orders.iterrows():
-                # 修改排版，容納編輯按鈕
                 c1, c2, c3, c4, c5 = st.columns([0.4, 2.5, 0.8, 0.6, 0.6])
                 c1.write("🍱" if row['category'] == '主餐' else "🥤")
                 c2.markdown(f'<span class="card-text"><b>{html.escape(row["item_name"])}</b> x{row["quantity"]}</span>', unsafe_allow_html=True)
                 c3.markdown(f'<span class="price-tag-sm">${row["price"]}</span>', unsafe_allow_html=True)
                 
+                # 編輯按鈕觸發
                 if c4.button("✏️", key=f"btn_edit_{row['id']}", help="修改這筆餐點", use_container_width=True):
                     edit_order_dialog(row['id'], row['item_name'], row['price'], row['quantity'], row['custom'])
                 
@@ -525,7 +557,7 @@ with tab1:
         st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(current_main_shop)} (主餐)</div></div>', unsafe_allow_html=True)
         with st.container(border=True):
             m_name_raw = st.text_input("主餐名稱", placeholder="輸入餐點...", key="m_name")
-            m_name = m_name_raw.strip() # 修復：寫入資料庫前先過濾掉手滑的空白
+            m_name = m_name_raw.strip()  # 修正：寫入庫前去首尾空白
             
             cp, cq = st.columns(2)
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
@@ -575,7 +607,7 @@ with tab1:
         st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(current_drink_shop)} (飲料)</div></div>', unsafe_allow_html=True)
         with st.container(border=True):
             d_name_raw = st.text_input("飲料名稱", placeholder="輸入飲料...", key="d_name")
-            d_name = d_name_raw.strip() # 修復：同樣過濾空白
+            d_name = d_name_raw.strip()  # 修正：寫入庫前去首尾空白
             
             cp, cq = st.columns(2)
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
