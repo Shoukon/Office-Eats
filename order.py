@@ -35,20 +35,20 @@ custom_css = """
     .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; padding-bottom: 5px; }
     .stTabs [data-baseweb="tab"] {
         height: 50px; border-radius: 8px;
-        background-color: transparent; /* 未選取時保持乾淨透氣 */
+        background-color: transparent; 
         padding: 10px 20px; font-weight: 600; border: none; color: gray;
         font-size: 1rem;
         transition: all 0.2s ease-in-out;
     }
     .stTabs [data-baseweb="tab"]:hover {
         color: var(--text-color);
-        background-color: var(--secondary-background-color); /* 滑鼠懸停時的微光提示 */
+        background-color: var(--secondary-background-color); 
     }
     .stTabs [aria-selected="true"] {
         background-color: var(--secondary-background-color) !important;
         color: var(--text-color) !important;
-        border-bottom: 3px solid #4A90E2 !important; /* 俐落的科技藍底線 */
-        border-radius: 8px 8px 0 0 !important; /* 底部直角貼合底線 */
+        border-bottom: 3px solid #4A90E2 !important; 
+        border-radius: 8px 8px 0 0 !important; 
     }
 
     /* 區塊標頭設計 */
@@ -322,7 +322,6 @@ def render_stats_section():
         st.markdown(f'<div class="section-header {icon_class}"><div>{title}</div><div>共 {total_qty} 份</div></div>', unsafe_allow_html=True)
         if df_source.empty: st.caption("無資料"); return
         
-        # 清理多餘空白避免 groupby 分離
         df_source['item_name'] = df_source['item_name'].astype(str).str.strip()
         df_source['custom'] = df_source['custom'].astype(str).str.strip()
         
@@ -360,12 +359,12 @@ def render_stats_section():
                             safe_cst = html.escape(str(row['custom'])).replace("|", " <span style='color:#FF4B4B; font-weight:bold'>|</span> ")
                             st.markdown(f'<div class="card-meta" style="margin-left:14px;">└ {safe_cst}</div>', unsafe_allow_html=True)
 
-    show_stats_optimized(df_all[df_all['category'] == '主餐'].copy(), f"🍱 {r_name} (主餐)", "header-food")
+    show_stats_optimized(df_all[df_all['category'] == '主餐'].copy(), f"🍱 {html.escape(str(r_name))} (主餐)", "header-food")
     st.divider()
-    show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {d_name} (飲料)", "header-drink")
+    show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {html.escape(str(d_name))} (飲料)", "header-drink")
 
 # ==========================================
-# 5. 收款管理 (主餐飲料獨立計算)
+# 5. 收款管理 
 # ==========================================
 @st.fragment
 def render_payment_section():
@@ -384,7 +383,6 @@ def render_payment_section():
     df_main = df_all[df_all['category'] == '主餐']
     df_drink = df_all[df_all['category'] == '飲料']
     
-    # 頂部分流進度條
     c_main_prog, c_drink_prog = st.columns(2)
     
     with c_main_prog:
@@ -393,7 +391,7 @@ def render_payment_section():
         prog_m = min(1.0, paid_m / total_m) if total_m > 0 else 0.0
         
         st.markdown(f'<div class="section-header header-food" style="margin-bottom:8px;">'
-                    f'<div>🍱 {html.escape(main_shop)} 收款</div>'
+                    f'<div>🍱 {html.escape(str(main_shop))} 收款</div>'
                     f'<div>${paid_m} / ${total_m}</div>'
                     f'</div>', unsafe_allow_html=True)
         st.progress(prog_m)
@@ -405,7 +403,7 @@ def render_payment_section():
         prog_d = min(1.0, paid_d / total_d) if total_d > 0 else 0.0
         
         st.markdown(f'<div class="section-header header-drink" style="margin-bottom:8px;">'
-                    f'<div>🥤 {html.escape(drink_shop)} 收款</div>'
+                    f'<div>🥤 {html.escape(str(drink_shop))} 收款</div>'
                     f'<div>${paid_d} / ${total_d}</div>'
                     f'</div>', unsafe_allow_html=True)
         st.progress(prog_d)
@@ -413,7 +411,7 @@ def render_payment_section():
 
     st.write("") 
     
-    t1, t2 = st.tabs([f"🍱 主餐明細 ({main_shop})", f"🥤 飲料明細 ({drink_shop})"])
+    t1, t2 = st.tabs([f"🍱 主餐明細 ({html.escape(str(main_shop))})", f"🥤 飲料明細 ({html.escape(str(drink_shop))})"])
     with t1: _pay_logic_grouped("主餐", df_main, "main")
     with t2: _pay_logic_grouped("飲料", df_drink, "drink")
 
@@ -526,7 +524,7 @@ with tab1:
         st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
         c_user, c_btn = st.columns([3, 1.5])
         with c_user:
-            if st.session_state['user_name']: st.info(f"Hi, **{html.escape(st.session_state['user_name'])}**！")
+            if st.session_state['user_name']: st.info(f"Hi, **{html.escape(str(st.session_state['user_name']))}**！")
             else: st.warning("⚠️ 尚未選擇名字")
         with c_btn:
             if st.button("👤 登入/切換", width="stretch", type="primary" if not st.session_state['user_name'] else "secondary"):
@@ -537,27 +535,32 @@ with tab1:
 
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
     my_sum = my_orders['price'].sum() if not my_orders.empty else 0
-    with st.expander(f"📋 {user_name} 的待點清單 (合計: ${my_sum})", expanded=True if not my_orders.empty else False):
+    with st.expander(f"📋 {html.escape(str(user_name))} 的待點清單 (合計: ${my_sum})", expanded=True if not my_orders.empty else False):
         if my_orders.empty: st.caption("尚未點餐")
         else:
             for _, row in my_orders.iterrows():
                 c1, c2, c3, c4, c5 = st.columns([0.4, 2.5, 0.8, 0.6, 0.6])
                 c1.write("🍱" if row['category'] == '主餐' else "🥤")
-                c2.markdown(f'<span class="card-text"><b>{html.escape(row["item_name"])}</b> x{row["quantity"]}</span>', unsafe_allow_html=True)
+                
+                # 修正：補上強制 str() 轉型，避免 TypeError
+                safe_item_name = html.escape(str(row["item_name"]))
+                
+                c2.markdown(f'<span class="card-text"><b>{safe_item_name}</b> &nbsp;<span style="color:gray; font-size:0.9rem">x{row["quantity"]}</span></span>', unsafe_allow_html=True)
                 c3.markdown(f'<span class="price-tag-sm">${row["price"]}</span>', unsafe_allow_html=True)
                 
                 if c4.button("✏️", key=f"btn_edit_{row['id']}", help="修改這筆餐點", use_container_width=True):
                     edit_order_dialog(row['id'], row['item_name'], row['price'], row['quantity'], row['custom'])
                 
                 with c5.popover("🗑️", help="點擊開啟刪除確認", use_container_width=True):
-                    st.write(f"刪除 **{html.escape(row['item_name'])}**？")
+                    st.write(f"刪除 **{safe_item_name}**？")
                     if st.button("⭕ 確認", key=f"confirm_del_{row['id']}", type="primary"):
                         execute_db("DELETE FROM orders WHERE id = ?", (row['id'],))
                         st.toast("✅ 已刪除"); st.rerun()
                         
                 if row['custom']:
                     safe_custom = html.escape(str(row['custom'])).replace("|", " <span style='color:#FF4B4B; font-weight:bold'>|</span> ")
-                    st.caption(f"└ {safe_custom}", unsafe_allow_html=True)
+                    # 重大修正：將原先無法穩定轉譯 HTML 的 st.caption，統一換成 st.markdown 以修復亂碼
+                    st.markdown(f'<div class="card-meta">└ {safe_custom}</div>', unsafe_allow_html=True)
     st.write("") 
 
     current_main_shop = new_main_shop
@@ -565,7 +568,7 @@ with tab1:
 
     c_food, c_drink = st.columns(2)
     with c_food:
-        st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(current_main_shop)} (主餐)</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(str(current_main_shop))} (主餐)</div></div>', unsafe_allow_html=True)
         with st.container(border=True):
             m_name_raw = st.text_input("主餐名稱", placeholder="輸入餐點...", key="m_name")
             m_name = m_name_raw.strip()
@@ -594,7 +597,7 @@ with tab1:
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
             
-            if display_list: st.caption(f"ℹ️ 準備加入: {html.escape(display_text)}")
+            if display_list: st.caption(f"ℹ️ 準備加入: {html.escape(str(display_text))}")
 
             if st.button("＋ 加入主餐", type="primary", width="stretch"):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
@@ -615,7 +618,7 @@ with tab1:
                 else: st.toast("⚠️ 請輸入主餐名稱 (不包含全是空白)")
 
     with c_drink:
-        st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(current_drink_shop)} (飲料)</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(str(current_drink_shop))} (飲料)</div></div>', unsafe_allow_html=True)
         with st.container(border=True):
             d_name_raw = st.text_input("飲料名稱", placeholder="輸入飲料...", key="d_name")
             d_name = d_name_raw.strip()
@@ -647,7 +650,7 @@ with tab1:
                     st.session_state["d_custom_manual"] = ""
                     st.rerun()
 
-            if d_display_list: st.caption(f"ℹ️ 準備加入: {html.escape(d_display_text)}")
+            if d_display_list: st.caption(f"ℹ️ 準備加入: {html.escape(str(d_display_text))}")
 
             if st.button("＋ 加入飲料", type="primary", width="stretch"):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
