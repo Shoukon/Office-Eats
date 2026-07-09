@@ -271,7 +271,7 @@ with st.sidebar:
         else: st.caption("修改人員或菜單需驗證")
 
 # ==========================================
-# 4. 統計看板 (全域去框線版本)
+# 4. 統計看板 (全域去框線版本，移除編號)
 # ==========================================
 @st.fragment
 def render_stats_section():
@@ -301,7 +301,7 @@ def render_stats_section():
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
             
-            # 去除 border=True，利用佈局與分隔線自然區隔
+            # 去除 border=True，並移除文字前的編號
             for idx, row in summary.iterrows():
                 with st.container():
                     c_qty, c_info = st.columns([1, 5], vertical_alignment="center")
@@ -309,7 +309,7 @@ def render_stats_section():
                         st.markdown(f'<div style="font-size:1.6rem; font-weight:800; color:#FF4B4B; text-align:left;">×{row["總量"]}</div>', unsafe_allow_html=True)
                     with c_info:
                         safe_name = html.escape(str(row["餐點"]))
-                        st.markdown(f'<div style="font-size:1.15rem; font-weight:700; color:var(--text-color);">{idx + 1}. {safe_name}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div style="font-size:1.15rem; font-weight:700; color:var(--text-color);">{safe_name}</div>', unsafe_allow_html=True)
                         if row['客製']: 
                             safe_custom = html.escape(str(row['客製']))
                             st.markdown(f'<div class="custom-text">{safe_custom}</div>', unsafe_allow_html=True)
@@ -455,7 +455,7 @@ def _pay_logic_grouped(cat, df, k):
                         st.toast(f"↩️ 已撤銷: {name}"); st.rerun()
 
 # ==========================================
-# 6. 主畫面與 Dialogs 邏輯 (全域去框線版本)
+# 6. 主畫面與 Dialogs 邏輯
 # ==========================================
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
