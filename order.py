@@ -17,13 +17,13 @@ except Exception:
 DB_FILE = "lunch.db"
 
 # ==========================================
-# 1. 頁面設定與 CSS (純淨排版核心)
+# 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
 st.set_page_config(page_title="點餐哦各位～ v3.3", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 移除全域字型強制綁定，讓系統自動選用最優質預設字體 */
+    /* 系統字型自動適配，徹底解決圖示亂碼 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
@@ -52,24 +52,25 @@ custom_css = """
     .header-drink { background: linear-gradient(135deg, #008080, #2E8B57); }
     .header-money { background: linear-gradient(135deg, #DAA520, #B8860B); color: white;}
 
-    /* ========== 統一清單排版系統 (明細表/待點清單/收款表) ========== */
+    /* ========== 統一清單排版系統 (無框線極簡風) ========== */
     .list-row {
         display: flex; justify-content: space-between; align-items: flex-start;
-        padding: 10px 12px; background: rgba(128,128,128,0.03); 
-        border-radius: 8px; margin-bottom: 8px; border: 1px solid rgba(128,128,128,0.1);
+        padding: 6px 8px; margin-bottom: 2px;
     }
-    .list-col-left { display: flex; flex-direction: column; gap: 4px; }
+    .list-col-left { display: flex; flex-direction: column; gap: 2px; }
     .list-title-group { display: flex; align-items: center; flex-wrap: wrap; }
     .list-name { font-size: 1.15rem; font-weight: 700; color: var(--text-color); margin-right: 20px; }
     .list-qty { font-size: 1.15rem; font-weight: 800; color: #FF4B4B; }
     .list-price { font-size: 1.15rem; font-weight: 700; color: #7f8c8d; font-family: monospace; padding-top: 2px;}
 
-    /* 客製化文字統一樣式 (已移除紅線與左邊距) */
+    /* 客製化文字統一樣式 (乾淨無邊線) */
     .custom-text {
-        font-size: 0.95rem; color: #95a5a6; margin-top: 4px; line-height: 1.4;
+        font-size: 0.95rem; color: #95a5a6; margin-top: 2px; line-height: 1.4;
     }
 
-    hr.soft-divider { border: 0; height: 1px; background: rgba(128,128,128,0.15); margin: 6px 0; }
+    /* 結構化分隔線 */
+    hr.soft-divider { border: 0; height: 1px; background: rgba(128,128,128,0.1); margin: 4px 0; }
+    hr.person-divider { border: 0; height: 1px; background: rgba(128,128,128,0.3); margin: 16px 0; }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -270,7 +271,7 @@ with st.sidebar:
         else: st.caption("修改人員或菜單需驗證")
 
 # ==========================================
-# 4. 統計看板
+# 4. 統計看板 (全域去框線版本)
 # ==========================================
 @st.fragment
 def render_stats_section():
@@ -300,17 +301,19 @@ def render_stats_section():
             summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
             summary.columns = ['餐點', '客製', '總量']
             
+            # 去除 border=True，利用佈局與分隔線自然區隔
             for idx, row in summary.iterrows():
-                with st.container(border=True):
-                    c_qty, c_info = st.columns([1, 4], vertical_alignment="center")
+                with st.container():
+                    c_qty, c_info = st.columns([1, 5], vertical_alignment="center")
                     with c_qty: 
-                        st.markdown(f'<div style="font-size:1.6rem; font-weight:800; color:#FF4B4B; text-align:center;">×{row["總量"]}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div style="font-size:1.6rem; font-weight:800; color:#FF4B4B; text-align:left;">×{row["總量"]}</div>', unsafe_allow_html=True)
                     with c_info:
                         safe_name = html.escape(str(row["餐點"]))
                         st.markdown(f'<div style="font-size:1.15rem; font-weight:700; color:var(--text-color);">{idx + 1}. {safe_name}</div>', unsafe_allow_html=True)
                         if row['客製']: 
                             safe_custom = html.escape(str(row['客製']))
                             st.markdown(f'<div class="custom-text">{safe_custom}</div>', unsafe_allow_html=True)
+                st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
             
             st.metric("該區總額", f"${df_source['price'].sum()}")
 
@@ -318,9 +321,9 @@ def render_stats_section():
             st.markdown("**📋 明細表 (核對用)**")
             grouped_by_person = df_source.groupby('name')
             for name, group in grouped_by_person:
-                with st.container(border=True):
+                with st.container():
                     safe_user = html.escape(str(name))
-                    st.markdown(f'<div style="font-size:1.15rem; font-weight:700; margin-bottom:10px; color:var(--text-color);">👤 {safe_user}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="font-size:1.15rem; font-weight:700; margin-bottom:6px; color:var(--text-color);">👤 {safe_user}</div>', unsafe_allow_html=True)
                     for _, row in group.iterrows():
                         safe_item = html.escape(str(row["item_name"]))
                         safe_cst_html = ""
@@ -337,13 +340,15 @@ def render_stats_section():
                             f'  <div class="list-price">${row["price"]}</div>'
                             f'</div>', unsafe_allow_html=True
                         )
+                # 使用較明顯的分隔線區隔不同點餐者
+                st.markdown("<hr class='person-divider'>", unsafe_allow_html=True)
 
     show_stats_optimized(df_all[df_all['category'] == '主餐'].copy(), f"🍱 {r_name} (主餐)", "header-food")
     st.divider()
     show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {d_name} (飲料)", "header-drink")
 
 # ==========================================
-# 5. 收款管理 
+# 5. 收款管理 (全域去框線版本)
 # ==========================================
 @st.fragment
 def render_payment_section():
@@ -396,9 +401,11 @@ def _pay_logic_grouped(cat, df, k):
         grouped_unpaid = unpaid_df.groupby('name')
         st.markdown(f"**⚠️ 待收款 ({len(grouped_unpaid)} 人)**")
         for name, group in grouped_unpaid:
-            total_price = group['price'].sum()
-            ids = group['id'].tolist()
-            with st.container(border=True):
+            # 去除 border=True
+            with st.container():
+                total_price = group['price'].sum()
+                ids = group['id'].tolist()
+                
                 c_header, c_btn = st.columns([4, 1], vertical_alignment="center")
                 with c_header:
                     st.markdown(f'<div style="display:flex; align-items:center; font-size:1.15rem;">'
@@ -428,6 +435,8 @@ def _pay_logic_grouped(cat, df, k):
                         f'  <div class="list-price">${row["price"]}</div>'
                         f'</div>', unsafe_allow_html=True
                     )
+            # 使用明確的分隔線區隔不同點餐者
+            st.markdown("<hr class='person-divider'>", unsafe_allow_html=True)
     else: st.success("👍 此區全數已付款！")
 
     paid_df = df[df['is_paid'] == 1]
@@ -446,7 +455,7 @@ def _pay_logic_grouped(cat, df, k):
                         st.toast(f"↩️ 已撤銷: {name}"); st.rerun()
 
 # ==========================================
-# 6. 主畫面與 Dialogs 邏輯
+# 6. 主畫面與 Dialogs 邏輯 (全域去框線版本)
 # ==========================================
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
@@ -501,7 +510,8 @@ if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'
 with tab1:
     if st.button("🔄 刷新頁面 (手動同步)", type="secondary", use_container_width=True): st.rerun()
     
-    with st.container(border=True):
+    # 移除 border=True 讓登入區更融於背景
+    with st.container():
         st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
         c_user, c_btn = st.columns([3, 1.5], vertical_alignment="center")
         with c_user:
@@ -558,7 +568,8 @@ with tab1:
     c_food, c_drink = st.columns(2)
     with c_food:
         st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(str(current_main_shop))} (主餐)</div></div>', unsafe_allow_html=True)
-        with st.container(border=True):
+        # 去除 border=True，讓表單無縫連接標題列
+        with st.container():
             m_name_raw = st.text_input("主餐名稱", placeholder="輸入餐點...", key="m_name")
             m_name = m_name_raw.strip()
             
@@ -608,7 +619,8 @@ with tab1:
 
     with c_drink:
         st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(str(current_drink_shop))} (飲料)</div></div>', unsafe_allow_html=True)
-        with st.container(border=True):
+        # 去除 border=True，讓表單無縫連接標題列
+        with st.container():
             d_name_raw = st.text_input("飲料名稱", placeholder="輸入飲料...", key="d_name")
             d_name = d_name_raw.strip()
             
