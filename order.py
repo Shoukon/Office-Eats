@@ -348,7 +348,7 @@ def render_stats_section():
     show_stats_optimized(df_all[df_all['category'] == '飲料'].copy(), f"🥤 {d_name} (飲料)", "header-drink")
 
 # ==========================================
-# 5. 收款管理 (全域去框線版本)
+# 5. 收款管理 (去人名下方多餘細線)
 # ==========================================
 @st.fragment
 def render_payment_section():
@@ -408,7 +408,8 @@ def _pay_logic_grouped(cat, df, k):
                 
                 c_header, c_btn = st.columns([4, 1], vertical_alignment="center")
                 with c_header:
-                    st.markdown(f'<div style="display:flex; align-items:center; font-size:1.15rem;">'
+                    # 加入 margin-bottom: 6px 保持與統計看板一致的留白
+                    st.markdown(f'<div style="display:flex; align-items:center; font-size:1.15rem; margin-bottom:6px;">'
                                 f'<b>👤 {html.escape(str(name))}</b>'
                                 f'<span style="margin-left:auto; color:#FF4B4B; font-weight:700;">應收: ${total_price}</span>'
                                 f'</div>', unsafe_allow_html=True)
@@ -418,7 +419,7 @@ def _pay_logic_grouped(cat, df, k):
                         execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
                         st.toast(f"💰 已收: {name} (${total_price})"); st.rerun()
                 
-                st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
+                # 這裡原本的 st.markdown("<hr class='soft-divider'>") 已被移除，讓視覺群組不被切斷
                 for _, row in group.iterrows():
                     safe_item = html.escape(str(row["item_name"]))
                     safe_cst_html = ""
