@@ -112,7 +112,7 @@ custom_css = """
 
     /* 客製需求文字：降低視覺權重，但保持足夠辨識度 */
     .custom-text {
-        font-size: 1.0rem; color: color-mix(in srgb, var(--text-color) 30%, transparent); margin-top: 2px; line-height: 1.4;
+        font-size: 1.0rem; color: color-mix(in srgb, var(--text-color) 45%, transparent); margin-top: 2px; line-height: 1.4;
     }
 
     /* 結構化分隔線 */
