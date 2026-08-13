@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.13", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.5", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -110,9 +110,9 @@ custom_css = """
     /* 移除了等寬字型 (monospace)，讓數字與英文字母跟隨系統平滑字體，視覺更統一 */
     .list-price { font-size: 1.15rem; font-weight: 700; color: #7f8c8d; padding-top: 2px;}
 
-    /* 客製化文字統一樣式 (稍微放大至 1.0rem 提升閱讀舒適度) */
+    /* 客製需求文字：降低視覺權重，但保持足夠辨識度 */
     .custom-text {
-        font-size: 1.0rem; color: #95a5a6; margin-top: 2px; line-height: 1.4;
+        font-size: 1.0rem; color: color-mix(in srgb, var(--text-color) 62%, transparent); margin-top: 2px; line-height: 1.4;
     }
 
     /* 結構化分隔線 */
@@ -294,22 +294,22 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.subheader("2. 清除本次訂單")
+    st.subheader("2. 清空本次訂單")
 
     if "confirm_reset" not in st.session_state:
         st.session_state.confirm_reset = False
 
-    if st.button("🗑️ 清除本次訂單", type="secondary"):
+    if st.button("🗑️ 清空本次訂單", type="secondary"):
         st.session_state.confirm_reset = True
 
     if st.session_state.confirm_reset:
-        st.warning("⚠️ 確定清除本次所有訂單？此動作無法復原。")
+        st.warning("⚠️ 確定清空本次所有訂單？此動作無法復原。")
         c1, c2 = st.columns(2)
 
         if c1.button("✅ 確定", key="confirm_reset_orders"):
             if execute_db("DELETE FROM orders"):
                 st.session_state.confirm_reset = False
-                st.toast("🗑️ 本次訂單已清除！")
+                st.toast("🗑️ 本次訂單已清空！")
                 st.rerun()
 
         if c2.button("❌ 取消", key="cancel_reset_orders"):
@@ -320,14 +320,14 @@ with st.sidebar:
 # ==========================================
 # 4. 統計看板 (全域去框線版本，移除編號)
 # ==========================================
-@st.fragment
+@st.fragment(run_every="10s")
 def render_stats_section():
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
         # 字體微調為 0.95rem
-        st.markdown(f'<div style="text-align:right; color:gray; font-size:0.95rem; margin:0; padding:0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:right; color:color-mix(in srgb, var(--text-color) 58%, transparent); font-size:0.9rem; margin:0; padding:0;">更新於 {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
     with c_ref_btn:
-        if st.button("🔄", help="手動刷新", use_container_width=True, key="btn_refresh_stats"): st.rerun()
+        if st.button("🔄", help="立即重新整理統計資料", use_container_width=True, key="btn_refresh_stats"): st.rerun(scope="fragment")
 
     r_name = get_shop_name("main")
     d_name = get_shop_name("drink")
@@ -463,7 +463,7 @@ def render_stats_section():
                 f'<div>{title}</div><div>共 0 份</div></div>',
                 unsafe_allow_html=True
             )
-            st.caption("無資料")
+            st.caption("目前無資料")
             return
 
         df_source["quantity"] = pd.to_numeric(
@@ -511,7 +511,7 @@ def render_stats_section():
         c_sum, c_det = st.columns([1, 1.2])
 
         with c_sum:
-            st.markdown("**📦 彙總表 (店家用)**")
+            st.markdown("**📦 出餐彙總**")
 
             # 第一層只依餐點名稱彙總。
             # custom 是餐點附加資訊，不應讓同一道餐點被拆成多筆主項目。
@@ -577,10 +577,10 @@ def render_stats_section():
 
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
 
-            st.metric("該區總額", f"${df_source['price'].sum()}")
+            st.metric("本區總額", f"${df_source['price'].sum()}")
 
         with c_det:
-            st.markdown("**📋 明細表 (核對用)**")
+            st.markdown("**📋 訂單明細（核對用）**")
             grouped_by_person = df_source.groupby('name')
             for name, group in grouped_by_person:
                 group = group.sort_values(
@@ -615,13 +615,13 @@ def render_stats_section():
 # ==========================================
 # 5. 收款管理 
 # ==========================================
-@st.fragment
+@st.fragment(run_every="10s")
 def render_payment_section():
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
-        st.markdown(f'<div style="text-align:right; color:gray; font-size:0.95rem; margin:0; padding:0;">最後更新 | {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:right; color:color-mix(in srgb, var(--text-color) 58%, transparent); font-size:0.9rem; margin:0; padding:0;">更新於 {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
     with c_ref_btn:
-        if st.button("🔄", help="手動刷新", use_container_width=True, key="btn_refresh_payment"): st.rerun()
+        if st.button("🔄", help="立即重新整理收款資料", use_container_width=True, key="btn_refresh_payment"): st.rerun(scope="fragment")
 
     df_all = get_orders_df()
     if df_all.empty: st.write("尚無訂單。"); return
@@ -655,17 +655,17 @@ def render_payment_section():
 
     st.write("") 
     
-    t1, t2 = st.tabs([f"🍱 主餐明細 ({main_shop})", f"🥤 飲料明細 ({drink_shop})"])
+    t1, t2 = st.tabs([f"🍱 主餐訂單（{main_shop}）", f"🥤 飲料訂單（{drink_shop}）"])
     with t1: _pay_logic_grouped("主餐", df_main, "main")
     with t2: _pay_logic_grouped("飲料", df_drink, "drink")
 
 def _pay_logic_grouped(cat, df, k):
-    if df.empty: st.caption("無資料"); return
+    if df.empty: st.caption("目前無資料"); return
     unpaid_df = df[df['is_paid'] == 0]
     
     if not unpaid_df.empty:
         grouped_unpaid = unpaid_df.groupby('name')
-        st.markdown(f"**⚠️ 待收款 ({len(grouped_unpaid)} 人)**")
+        st.markdown(f"**⚠️ 待收款（{len(grouped_unpaid)} 人）**")
         for name, group in grouped_unpaid:
             with st.container():
                 total_price = group['price'].sum()
@@ -678,10 +678,10 @@ def _pay_logic_grouped(cat, df, k):
                                 f'<span style="margin-left:auto; color:#FF4B4B; font-weight:700;">應收: ${total_price}</span>'
                                 f'</div>', unsafe_allow_html=True)
                 with c_btn:
-                    if st.button("收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
+                    if st.button("確認收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
-                        st.toast(f"💰 已收: {name} (${total_price})"); st.rerun()
+                        st.toast(f"💰 已完成收款：{name} (${total_price})"); st.rerun(scope="fragment")
                 
                 for _, row in group.iterrows():
                     safe_item = html.escape(str(row["item_name"]))
@@ -700,22 +700,22 @@ def _pay_logic_grouped(cat, df, k):
                         f'</div>', unsafe_allow_html=True
                     )
             st.markdown("<hr class='person-divider'>", unsafe_allow_html=True)
-    else: st.success("👍 此區全數已付款！")
+    else: st.success("👍 此區款項已全數收齊！")
 
     paid_df = df[df['is_paid'] == 1]
     if not paid_df.empty:
         st.write(""); grouped_paid = paid_df.groupby('name')
-        with st.expander(f"✅ 已付款名單 ({len(grouped_paid)} 人) - 點此展開撤銷"):
+        with st.expander(f"✅ 已收款名單（{len(grouped_paid)} 人）- 點此展開管理"):
             for name, group in grouped_paid:
                 total_price = group['price'].sum()
                 ids = group['id'].tolist()
                 c1, c2 = st.columns([4, 1], vertical_alignment="center")
                 with c1: st.write(f"~~{html.escape(str(name))} (${total_price})~~") 
                 with c2:
-                    if st.button("撤銷", key=f"undo_{k}_{name}", use_container_width=True):
+                    if st.button("撤銷收款", key=f"undo_{k}_{name}", use_container_width=True):
                         placeholders = ','.join('?' * len(ids))
                         execute_db(f"UPDATE orders SET is_paid = 0 WHERE id IN ({placeholders})", tuple(ids))
-                        st.toast(f"↩️ 已撤銷: {name}"); st.rerun()
+                        st.toast(f"↩️ 已撤銷收款：{name}"); st.rerun(scope="fragment")
 
 # ==========================================
 # 6. 主畫面與 Dialogs 邏輯
@@ -724,19 +724,19 @@ def _pay_logic_grouped(cat, df, k):
 MAIN_SIZE_OPTIONS = ["無", "小份", "大份"]
 
 st.title("🍱 點餐哦各位～")
-tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
+tab1, tab2, tab3 = st.tabs(["📝 開始點餐", "📊 統計看板", "💰 收款管理"])
 
-@st.dialog("👤 請選擇你的名字")
+@st.dialog("👤 請選擇您的姓名")
 def login_dialog():
-    st.caption("點擊下方名字即可登入")
-    selected = st.pills("人員清單", colleagues_list, selection_mode="single", label_visibility="collapsed")
+    st.caption("請選擇您的姓名以開始點餐")
+    selected = st.pills("姓名", colleagues_list, selection_mode="single", label_visibility="collapsed")
     if selected:
         st.session_state['user_name'] = selected
         st.rerun()
 
-@st.dialog("🎨 選擇客製化")
+@st.dialog("🎨 客製需求")
 def custom_dialog(key_prefix, tag_options):
-    st.caption("快速選項 (可複選)")
+    st.caption("常用客製需求（可複選）")
     current_tags = st.session_state.get(f"{key_prefix}_tags", [])
     current_manual = st.session_state.get(f"{key_prefix}_manual", "")
 
@@ -757,10 +757,10 @@ def custom_dialog(key_prefix, tag_options):
         )
     else:
         new_tags = []
-        st.caption("目前沒有快速客製選項")
+        st.caption("目前沒有可用的常用客製需求")
 
     st.markdown("---")
-    new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="如：不要XXX...或是加XXX...", key=f"{key_prefix}_manual_widget").strip()
+    new_manual = st.text_input("其他客製需求", value=current_manual, placeholder="例如：不要香菜、加珍珠、醬料另外放", key=f"{key_prefix}_manual_widget").strip()
     if st.button("✅ 完成", use_container_width=True, type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
@@ -774,7 +774,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
         return
     if int(current.iloc[0]["is_paid"] or 0) == 1:
-        st.warning("🔒 這筆訂單已付款，無法修改。")
+        st.warning("🔒 這筆訂單已完成收款，無法修改。")
         return
 
     # 以資料庫實際 category 為準，避免畫面傳入值與資料庫不一致。
@@ -788,12 +788,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         unit_price = int(db_unit_price)
 
     new_name = st.text_input(
-        "主餐名稱" if edit_category == "主餐" else "飲料名稱",
+        "餐點名稱" if edit_category == "主餐" else "飲料名稱",
         value=str(cur_name)
     ).strip()
 
     c_p, c_q = st.columns(2)
-    new_unit_price = c_p.number_input("單價", min_value=0, step=5, value=unit_price)
+    new_unit_price = c_p.number_input("單價（元）", min_value=0, step=5, value=unit_price)
     new_qty = c_q.number_input("數量", min_value=1, step=1, value=int(cur_qty))
 
     # ------------------------------------------------------
@@ -884,7 +884,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
         if custom_tags_main:
             edit_tags = st.pills(
-                "快速客製選項（可複選）",
+                "常用客製需求（可複選）",
                 custom_tags_main,
                 default=current_tags,
                 key=f"{tags_key}_widget",
@@ -892,12 +892,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             )
         else:
             edit_tags = []
-            st.caption("目前沒有快速客製選項")
+            st.caption("目前沒有可用的常用客製需求")
 
         edit_manual = st.text_input(
-            "手動客製",
+            "其他客製需求",
             value=st.session_state.get(manual_key, ""),
-            placeholder="如：不要XXX...或是加XXX...",
+            placeholder="例如：不要香菜、加珍珠、醬料另外放",
             key=f"{manual_key}_widget"
         ).strip()
 
@@ -1033,7 +1033,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
         if custom_tags_drink:
             edit_drink_tags = st.pills(
-                "快速客製選項（可複選）",
+                "常用客製需求（可複選）",
                 custom_tags_drink,
                 default=current_drink_tags,
                 key=f"{drink_tags_key}_widget",
@@ -1041,12 +1041,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             )
         else:
             edit_drink_tags = []
-            st.caption("目前沒有快速客製選項")
+            st.caption("目前沒有可用的常用客製需求")
 
         edit_drink_manual = st.text_input(
-            "手動客製",
+            "其他客製需求",
             value=st.session_state.get(drink_manual_key, ""),
-            placeholder="如：加XXX、不要XXX...",
+            placeholder="例如：加珍珠、不要冰、醬料另外放",
             key=f"{drink_manual_key}_widget"
         ).strip()
 
@@ -1072,11 +1072,11 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
             return
         if int(current_check.iloc[0]["is_paid"] or 0) == 1:
-            st.error("🔒 這筆訂單已付款，無法修改。")
+            st.error("🔒 這筆訂單已完成收款，無法修改。")
             return
 
         if edit_category == "主餐" and edit_size not in MAIN_SIZE_OPTIONS:
-            st.error("請選擇主餐尺寸")
+            st.error("請選擇餐點尺寸")
             return
 
         if not new_name:
@@ -1100,16 +1100,16 @@ if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = 
 if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
 
 with tab1:
-    if st.button("🔄 刷新頁面 (手動同步)", type="secondary", use_container_width=True): st.rerun()
+    if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
     
     with st.container():
-        st.markdown('<h5>👤 請問你是誰？</h5>', unsafe_allow_html=True)
+        st.markdown('<h5>👤 請選擇您的姓名</h5>', unsafe_allow_html=True)
         c_user, c_btn = st.columns([3, 1.5], vertical_alignment="center")
         with c_user:
-            if st.session_state['user_name']: st.info(f"Hi, **{html.escape(str(st.session_state['user_name']))}**！")
-            else: st.warning("⚠️ 尚未選擇名字")
+            if st.session_state['user_name']: st.info(f"目前使用者：**{html.escape(str(st.session_state['user_name']))}**")
+            else: st.warning("⚠️ 尚未選擇姓名")
         with c_btn:
-            if st.button("👤 登入/切換", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
+            if st.button("👤 選擇／切換使用者", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
                 login_dialog()
         if not st.session_state['user_name']: st.stop()
 
@@ -1117,8 +1117,8 @@ with tab1:
 
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
     my_sum = my_orders['price'].sum() if not my_orders.empty else 0
-    with st.expander(f"📋 {html.escape(str(user_name))} 的待點清單 (合計: ${my_sum})", expanded=True if not my_orders.empty else False):
-        if my_orders.empty: st.caption("尚未點餐")
+    with st.expander(f"📋 {html.escape(str(user_name))} 的訂單（合計：${my_sum}）", expanded=True if not my_orders.empty else False):
+        if my_orders.empty: st.caption("目前尚無訂單")
         else:
             for _, row in my_orders.iterrows():
                 c_icon, c_info, c_btn1, c_btn2 = st.columns([0.4, 4.5, 0.7, 0.7], vertical_alignment="center")
@@ -1146,7 +1146,7 @@ with tab1:
                 if c_btn1.button(
                     "🔒" if is_paid else "✏️",
                     key=f"btn_edit_{row['id']}",
-                    help="已付款，無法修改" if is_paid else "修改",
+                    help="已完成收款，無法修改" if is_paid else "修改",
                     use_container_width=True,
                     disabled=is_paid
                 ):
@@ -1163,7 +1163,7 @@ with tab1:
                     c_btn2.button(
                         "🔒",
                         key=f"btn_del_locked_{row['id']}",
-                        help="已付款，無法刪除",
+                        help="已完成收款，無法刪除",
                         use_container_width=True,
                         disabled=True
                     )
@@ -1186,11 +1186,11 @@ with tab1:
     with c_food:
         st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(str(current_main_shop))} (主餐)</div></div>', unsafe_allow_html=True)
         with st.container():
-            m_name_raw = st.text_input("主餐名稱", placeholder="輸入餐點...", key="m_name")
+            m_name_raw = st.text_input("餐點名稱", placeholder="例如：肉圓、雞排飯", key="m_name")
             m_name = m_name_raw.strip()
             
             cp, cq = st.columns(2)
-            m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
+            m_price_unit = cp.number_input("單價（元）", min_value=0, step=5, format="%d", key="m_price")
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
             # Streamlit widget 的 key 必須在 widget 建立前修改。
             # 若上一輪要求重設尺寸，本輪先重設，再建立 st.pills。
@@ -1238,23 +1238,23 @@ with tab1:
             display_count = len(display_parts)
 
             btn_type = "primary" if display_parts else "secondary"
-            btn_label = f"🎨 客製化 (✅已選{display_count}項)" if display_count else "🎨 客製化 (目前: 無)"
+            btn_label = f"🎨 客製需求（已選 {display_count} 項）" if display_count else "🎨 客製需求（無）"
 
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
                 if st.button(btn_label, type=btn_type, use_container_width=True, key="btn_m_custom"):
                     custom_dialog("m_custom", custom_tags_main)
             with c_cust_clear:
-                if st.button("❌", help="清空主餐客製", use_container_width=True, key="clr_m_custom"):
+                if st.button("❌", help="清空主餐客製需求", use_container_width=True, key="clr_m_custom"):
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
             
-            if display_parts: st.caption(f"ℹ️ 準備加入: {html.escape(str(display_text))}")
+            if display_parts: st.caption(f"ℹ️ 即將加入：{html.escape(str(display_text))}")
 
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_size not in MAIN_SIZE_OPTIONS:
-                    st.toast("🚫 無法加入：請選擇主餐尺寸！", icon="⚠️")
+                    st.toast("🚫 無法加入：請選擇餐點尺寸！", icon="⚠️")
                 elif m_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
@@ -1294,20 +1294,20 @@ with tab1:
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} ×{m_qty}"); st.rerun()
-                else: st.toast("⚠️ 請輸入主餐名稱")
+                else: st.toast("⚠️ 請輸入餐點名稱")
 
     with c_drink:
         st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(str(current_drink_shop))} (飲料)</div></div>', unsafe_allow_html=True)
         with st.container():
-            d_name_raw = st.text_input("飲料名稱", placeholder="輸入飲料...", key="d_name")
+            d_name_raw = st.text_input("飲料名稱", placeholder="例如：紅茶、青茶", key="d_name")
             d_name = d_name_raw.strip()
             
             cp, cq = st.columns(2)
-            d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
+            d_price_unit = cp.number_input("單價（元）", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
             
             d_size = st.pills(
-                "尺寸",
+                "尺寸（必選）",
                 ["M(中杯)", "L(大杯)", "XL(特大杯)"],
                 default="L(大杯)",
                 key="d_size",
@@ -1343,19 +1343,19 @@ with tab1:
             d_display_text = ", ".join(d_display_list) if d_display_list else "無"
             
             d_btn_type = "primary" if d_display_list else "secondary"
-            d_btn_label = f"🎨 客製化 (✅已選{len(d_display_list)}項)" if d_display_list else "🎨 客製化 (目前: 無)"
+            d_btn_label = f"🎨 客製需求（已選 {len(d_display_list)} 項）" if d_display_list else "🎨 客製需求（無）"
 
             dc_btn, dc_clear = st.columns([4, 1])
             with dc_btn:
                 if st.button(d_btn_label, type=d_btn_type, use_container_width=True, key="btn_d_custom"):
                     custom_dialog("d_custom", custom_tags_drink)
             with dc_clear:
-                if st.button("❌", help="清空飲料客製", use_container_width=True, key="clr_d_custom"):
+                if st.button("❌", help="清空飲料客製需求", use_container_width=True, key="clr_d_custom"):
                     st.session_state["d_custom_tags"] = []
                     st.session_state["d_custom_manual"] = ""
                     st.rerun()
 
-            if d_display_list: st.caption(f"ℹ️ 準備加入: {html.escape(str(d_display_text))}")
+            if d_display_list: st.caption(f"ℹ️ 即將加入：{html.escape(str(d_display_text))}")
 
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
