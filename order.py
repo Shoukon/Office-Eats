@@ -19,7 +19,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.4", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.5", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -511,6 +511,9 @@ def _pay_logic_grouped(cat, df, k):
 # ==========================================
 # 6. 主畫面與 Dialogs 邏輯
 # ==========================================
+# 主餐尺寸：固定選項。「無」為預設值，儲存時不寫入 custom。
+MAIN_SIZE_OPTIONS = ["無", "小份", "大份"]
+
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 我要點餐", "📊 統計看板", "💰 收款管理"])
 
@@ -601,6 +604,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             if part is not None and part.strip()
         ]
 
+        # 新格式：尺寸, 辣度, 快速客製...
+        # 舊資料沒有尺寸時，第一段仍可能直接是辣度，因此兼容舊格式。
+        main_size = "無"
+        if custom_parts and custom_parts[0] in ("小份", "大份"):
+            main_size = custom_parts.pop(0)
+
         if custom_parts and custom_parts[0] in spicy_levels:
             main_spicy = custom_parts.pop(0)
 
@@ -621,12 +630,26 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         tags_key = f"edit_m_tags_{order_id}"
         manual_key = f"edit_m_manual_{order_id}"
 
+        size_key = f"edit_m_size_{order_id}"
+
+        if size_key not in st.session_state:
+            st.session_state[size_key] = main_size if main_size in MAIN_SIZE_OPTIONS else "無"
         if spicy_key not in st.session_state:
             st.session_state[spicy_key] = main_spicy if main_spicy in spicy_levels else (spicy_levels[0] if spicy_levels else None)
         if tags_key not in st.session_state:
             st.session_state[tags_key] = main_tags
         if manual_key not in st.session_state:
             st.session_state[manual_key] = main_manual
+
+        if st.session_state.get(size_key) not in MAIN_SIZE_OPTIONS:
+            st.session_state[size_key] = "無"
+        edit_size = st.pills(
+            "尺寸",
+            MAIN_SIZE_OPTIONS,
+            default="無",
+            key=size_key,
+            selection_mode="single"
+        )
 
         if spicy_levels:
             if st.session_state.get(spicy_key) not in spicy_levels:
@@ -677,6 +700,8 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             if v is not None and str(v).strip()
         ]
         parts = []
+        if edit_size and str(edit_size).strip() != "無":
+            parts.append(str(edit_size).strip())
         if edit_spicy and str(edit_spicy).strip() != "無":
             parts.append(str(edit_spicy).strip())
         if clean_tags:
@@ -954,6 +979,17 @@ with tab1:
             cp, cq = st.columns(2)
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
+            # 主餐尺寸固定為「無 / 小份 / 大份」；「無」為預設且不寫入 custom。
+            if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
+                st.session_state["m_size"] = "無"
+            m_size = st.pills(
+                "尺寸",
+                MAIN_SIZE_OPTIONS,
+                default="無",
+                key="m_size",
+                selection_mode="single"
+            )
+
             # Secrets 修改選項後，舊的 session_state 可能還保留已不存在的選項。
             # 例如原本選「無」，後來從 Secrets 移除「無」，st.pills 可能回傳 None。
             if spicy_levels:
@@ -970,28 +1006,45 @@ with tab1:
             current_tags = st.session_state.get("m_custom_tags", [])
             current_manual = st.session_state.get("m_custom_manual", "")
             display_list = current_tags.copy()
-            if current_manual: display_list.append(current_manual)
-            display_text = ", ".join(display_list) if display_list else "無"
-            
-            btn_type = "primary" if display_list else "secondary"
-            btn_label = f"🎨 客製化 (✅已選{len(display_list)}項)" if display_list else "🎨 客製化 (目前: 無)"
-            
+            if current_manual:
+                display_list.append(current_manual)
+
+            # 「無」尺寸不列入準備加入提示；選小份/大份才顯示。
+            display_parts = []
+            if m_size and str(m_size).strip() != "無":
+                display_parts.append(str(m_size).strip())
+            display_parts.extend(
+                str(value).strip()
+                for value in display_list
+                if value is not None and str(value).strip()
+            )
+            display_text = ", ".join(display_parts) if display_parts else "無"
+            display_count = len(display_parts)
+
+            btn_type = "primary" if display_parts else "secondary"
+            btn_label = f"🎨 客製化 (✅已選{display_count}項)" if display_count else "🎨 客製化 (目前: 無)"
+
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
                 if st.button(btn_label, type=btn_type, use_container_width=True, key="btn_m_custom"):
                     custom_dialog("m_custom", custom_tags_main)
             with c_cust_clear:
                 if st.button("❌", help="清空主餐客製", use_container_width=True, key="clr_m_custom"):
+                    st.session_state["m_size"] = "無"
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
             
-            if display_list: st.caption(f"ℹ️ 準備加入: {html.escape(str(display_text))}")
+            if display_parts: st.caption(f"ℹ️ 準備加入: {html.escape(str(display_text))}")
 
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
                     parts = []
+
+                    # 尺寸與辣度一樣，「無」代表不需要特別註記，因此不寫入 custom。
+                    if m_size and str(m_size).strip() != "無":
+                        parts.append(str(m_size).strip())
 
                     # m_spicy 可能因 Secrets 修改而暫時為 None；只有有效文字才加入。
                     if m_spicy and str(m_spicy).strip() != "無":
@@ -1017,7 +1070,8 @@ with tab1:
                             datetime.now().strftime('%Y-%m-%d %H:%M'), int(m_price_unit)
                         )
                     ):
-                        # 只清除剛剛送出的主餐客製化，不影響尚未送出的飲料設定。
+                        # 只清除剛剛送出的主餐設定，不影響尚未送出的飲料設定。
+                        st.session_state["m_size"] = "無"
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} ×{m_qty}"); st.rerun()
