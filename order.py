@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.9", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.10", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -334,6 +334,43 @@ def render_stats_section():
     df_all = get_orders_df()
     if df_all.empty: st.info("📦 目前尚無訂單，等待第一筆資料..."); return
 
+    def format_stats_custom(category, raw_custom):
+        """
+        店家統計看板專用的客製化顯示格式。
+        不修改資料庫原始 custom，只在顯示時重新整理：
+        - 主餐尺寸「無」：不顯示
+        - 主餐辣度「無」：顯示為「不辣」
+        - 主餐有尺寸：尺寸放在最前面
+        - 其他客製：照原本內容接在後面
+        """
+        raw = str(raw_custom or "").strip()
+        if not raw:
+            return ""
+
+        parts = [p.strip() for p in raw.split(",") if p is not None and p.strip()]
+
+        if category == "主餐":
+            result = []
+
+            # 新格式：尺寸, 辣度, 其他客製...
+            # 舊格式：辣度, 其他客製...
+            if parts and parts[0] in ("小份", "大份"):
+                result.append(parts.pop(0))
+
+            # 辣度「無」在店家看板顯示為「不辣」。
+            if parts and parts[0] in ("無", "微辣", "小辣", "中辣", "大辣"):
+                spicy = parts.pop(0)
+                if spicy == "無":
+                    result.append("不辣")
+                else:
+                    result.append(spicy)
+
+            result.extend(parts)
+            return "・".join(result)
+
+        # 飲料及其他類別維持既有顯示格式。
+        return raw
+
     def show_stats_optimized(df_source, title, icon_class):
         # 獨立副本，避免統計區塊互相修改 DataFrame。
         df_source = df_source.copy()
@@ -374,6 +411,12 @@ def render_stats_section():
             .str.strip()
         )
 
+        # 店家看板只改「顯示內容」，不改資料庫原始 custom。
+        df_source['stats_custom'] = df_source.apply(
+            lambda row: format_stats_custom(row["category"], row["custom"]),
+            axis=1
+        )
+
         c_sum, c_det = st.columns([1, 1.2])
 
         with c_sum:
@@ -409,14 +452,14 @@ def render_stats_section():
 
                         # 同一餐點底下，再依客製化統計，讓店家知道各種客製要做幾份。
                         custom_group = (
-                            item_group[item_group["custom"] != ""]
-                            .groupby("custom", dropna=False)["quantity"]
+                            item_group[item_group["stats_custom"] != ""]
+                            .groupby("stats_custom", dropna=False)["quantity"]
                             .sum()
                             .reset_index()
                         )
 
                         for _, custom_row in custom_group.iterrows():
-                            safe_custom = html.escape(str(custom_row["custom"]))
+                            safe_custom = html.escape(str(custom_row["stats_custom"]))
                             st.markdown(
                                 f'<div class="custom-text">{safe_custom} ×{custom_row["quantity"]}</div>',
                                 unsafe_allow_html=True
@@ -436,8 +479,8 @@ def render_stats_section():
                     for _, row in group.iterrows():
                         safe_item = html.escape(str(row["item_name"]))
                         safe_cst_html = ""
-                        if row['custom']: 
-                            safe_cst = html.escape(str(row['custom']))
+                        if row['stats_custom']:
+                            safe_cst = html.escape(str(row['stats_custom']))
                             safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                             
                         st.markdown(
