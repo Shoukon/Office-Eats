@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.7", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.8", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -696,7 +696,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         if st.session_state.get(size_key) not in MAIN_SIZE_OPTIONS:
             st.session_state[size_key] = "無"
         edit_size = st.pills(
-            "尺寸",
+            "尺寸（必選）",
             MAIN_SIZE_OPTIONS,
             default="無",
             key=size_key,
@@ -918,6 +918,10 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             st.error("🔒 這筆訂單已付款，無法修改。")
             return
 
+        if edit_category == "主餐" and edit_size not in MAIN_SIZE_OPTIONS:
+            st.error("請選擇主餐尺寸")
+            return
+
         if not new_name:
             st.error("餐點名稱不能為空")
             return
@@ -1040,7 +1044,7 @@ with tab1:
             if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
                 st.session_state["m_size"] = "無"
             m_size = st.pills(
-                "尺寸",
+                "尺寸（必選）",
                 MAIN_SIZE_OPTIONS,
                 default="無",
                 key="m_size",
@@ -1066,15 +1070,13 @@ with tab1:
             if current_manual:
                 display_list.append(current_manual)
 
-            # 「無」尺寸不列入準備加入提示；選小份/大份才顯示。
-            display_parts = []
-            if m_size and str(m_size).strip() != "無":
-                display_parts.append(str(m_size).strip())
-            display_parts.extend(
+            # 尺寸是獨立欄位，不算客製化。
+            # 只有快速客製與手動客製才會影響客製化按鈕的狀態。
+            display_parts = [
                 str(value).strip()
                 for value in display_list
                 if value is not None and str(value).strip()
-            )
+            ]
             display_text = ", ".join(display_parts) if display_parts else "無"
             display_count = len(display_parts)
 
@@ -1087,7 +1089,6 @@ with tab1:
                     custom_dialog("m_custom", custom_tags_main)
             with c_cust_clear:
                 if st.button("❌", help="清空主餐客製", use_container_width=True, key="clr_m_custom"):
-                    st.session_state["_reset_m_size"] = True
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
@@ -1095,7 +1096,10 @@ with tab1:
             if display_parts: st.caption(f"ℹ️ 準備加入: {html.escape(str(display_text))}")
 
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
-                if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
+                if m_size not in MAIN_SIZE_OPTIONS:
+                    st.toast("🚫 無法加入：請選擇主餐尺寸！", icon="⚠️")
+                elif m_price_unit == 0:
+                    st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
                     parts = []
 
