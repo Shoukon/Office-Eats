@@ -9,21 +9,26 @@ from datetime import datetime
 # ==========================================
 # 0. 系統設定區
 # ==========================================
-try:
-    ADMIN_PASSWORD = st.secrets["admin"]["password"]
-except Exception:
-    ADMIN_PASSWORD = "3345678"
-
 DB_FILE = "lunch.db"
+
+# 人員與點餐選項是辦公室固定設定，統一由 Streamlit Secrets 管理。
+# [settings] -> colleagues
+# [options]  -> spicy / ice / sugar / tags / drink_tags
+# 這些固定設定不寫入 SQLite，避免產生兩套不同的設定來源.
 
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.1", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 系統字型自動適配，徹底解決圖示亂碼與中英文數字不一致問題 */
+    /* 辦公室 Windows 11 繁中環境：中文、英文、數字統一優先使用微軟正黑體 */
+    html, body, button, input, textarea, select,
+    [data-baseweb], [class*="st-"] {
+        font-family: "Microsoft JhengHei", "微軟正黑體", sans-serif !important;
+    }
+
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
@@ -80,55 +85,81 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ==========================================
 # 2. 資料庫邏輯區
 # ==========================================
-BACKUP_COLLEAGUES = ["請設定Secrets或新增人員"]
-BACKUP_OPTIONS = {
-    "spicy": ["微辣", "小辣", "中辣", "大辣"],
-    "ice": ["去冰", "微冰", "少冰", "正常冰"],
-    "sugar": ["無糖", "微糖", "半糖", "全糖"],
-    "tags": ["不要蔥", "不要香菜"],
-    "drink_tags": ["加珍珠", "加椰果"]
-}
+def get_settings_from_secrets():
+    colleagues = []
+    options = {"spicy": [], "ice": [], "sugar": [], "tags": [], "drink_tags": []}
 
-def get_defaults_from_secrets():
-    colleagues = BACKUP_COLLEAGUES
-    options = BACKUP_OPTIONS.copy()
     try:
-        if "default_settings" in st.secrets:
-            ds = st.secrets["default_settings"]
-            if "colleagues" in ds: colleagues = ds["colleagues"]
-        if "default_options" in st.secrets:
-            do = st.secrets["default_options"]
-            for key in options.keys():
-                if key in do: options[key] = do[key]
-    except Exception: pass
+        settings = st.secrets.get("settings", {})
+        colleagues = list(settings.get("colleagues", []))
+    except Exception:
+        pass
+
+    try:
+        secret_options = st.secrets.get("options", {})
+        for key in options:
+            options[key] = list(secret_options.get(key, []))
+    except Exception:
+        pass
+
     return colleagues, options
 
-DEFAULT_COLLEAGUES, DEFAULT_OPTIONS = get_defaults_from_secrets()
+
+def unique_clean_list(values):
+    result = []
+    seen = set()
+    for value in values:
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+DEFAULT_COLLEAGUES, DEFAULT_OPTIONS = get_settings_from_secrets()
+DEFAULT_COLLEAGUES = unique_clean_list(DEFAULT_COLLEAGUES)
+if not DEFAULT_COLLEAGUES:
+    DEFAULT_COLLEAGUES = ["請在 Streamlit Secrets 的 [settings] 設定人員"]
+
+for _key in DEFAULT_OPTIONS:
+    DEFAULT_OPTIONS[_key] = unique_clean_list(DEFAULT_OPTIONS[_key])
+
+# 「無」是辣度的系統內建選項，不需要寫進 Secrets。
+DEFAULT_OPTIONS["spicy"] = [v for v in DEFAULT_OPTIONS["spicy"] if v != "無"]
+
 
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     try:
-        c.execute('''CREATE TABLE IF NOT EXISTS orders (
+        c.execute("""CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, category TEXT, item_name TEXT,
-            price INTEGER, custom TEXT, quantity INTEGER, order_time TEXT, is_paid BOOLEAN)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS config_colleagues (name TEXT PRIMARY KEY)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS config_options (
-            category TEXT, option_value TEXT, PRIMARY KEY (category, option_value))''')
-        c.execute('''CREATE TABLE IF NOT EXISTS config_shop (
-            category TEXT PRIMARY KEY, shop_name TEXT)''')
+            price INTEGER, custom TEXT, quantity INTEGER, order_time TEXT, is_paid BOOLEAN,
+            unit_price INTEGER)""")
 
-        for n in DEFAULT_COLLEAGUES:
-            c.execute("INSERT OR IGNORE INTO config_colleagues (name) VALUES (?)", (n,))
-        for cat, options in DEFAULT_OPTIONS.items():
-            for opt in options:
-                c.execute("INSERT OR IGNORE INTO config_options (category, option_value) VALUES (?, ?)", (cat, opt))
-        
-        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)", ("main", "吃什麼？"))
-        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)", ("drink", "喝什麼？"))
+        order_columns = {row[1] for row in c.execute("PRAGMA table_info(orders)").fetchall()}
+        if "unit_price" not in order_columns:
+            c.execute("ALTER TABLE orders ADD COLUMN unit_price INTEGER")
+            c.execute("""UPDATE orders
+                         SET unit_price = CASE
+                             WHEN quantity > 0 AND price % quantity = 0
+                             THEN price / quantity
+                             ELSE NULL
+                         END
+                         WHERE unit_price IS NULL""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS config_shop (
+            category TEXT PRIMARY KEY, shop_name TEXT)""")
+        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)",
+                  ("main", "吃什麼？"))
+        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)",
+                  ("drink", "喝什麼？"))
         conn.commit()
     finally:
         conn.close()
+
 
 def execute_db(query, params=()):
     max_retries = 5
@@ -160,25 +191,6 @@ def get_db(query, params=()):
         except Exception: break
     return pd.DataFrame()
 
-def get_config_list(table, col, cat=None):
-    if cat: return get_db(f"SELECT {col} FROM {table} WHERE category = ? ORDER BY rowid", (cat,))
-    else: return get_db(f"SELECT {col} FROM {table} ORDER BY rowid")
-
-def update_config_list(table, col, new_df, cat=None):
-    execute_db(f"DELETE FROM {table}" + (f" WHERE category = '{cat}'" if cat else ""))
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
-    c = conn.cursor()
-    try:
-        if cat:
-            data = [(cat, row[col]) for _, row in new_df.iterrows() if row[col]]
-            c.executemany(f"INSERT INTO {table} (category, {col}) VALUES (?, ?)", data)
-        else:
-            data = [(row[col],) for _, row in new_df.iterrows() if row[col]]
-            c.executemany(f"INSERT INTO {table} ({col}) VALUES (?)", data)
-        conn.commit()
-    finally:
-        conn.close()
-
 def get_shop_name(cat):
     df = get_db("SELECT shop_name FROM config_shop WHERE category = ?", (cat,))
     if not df.empty: return df.iloc[0]['shop_name']
@@ -189,31 +201,28 @@ def set_shop_name(cat, name):
 
 init_db()
 
-df_colleagues = get_config_list("config_colleagues", "name")
-colleagues_list = df_colleagues["name"].tolist() if not df_colleagues.empty else ["請新增人員"]
-df_spicy = get_config_list("config_options", "option_value", "spicy")
-spicy_levels = ["無"] + df_spicy["option_value"].tolist()
-df_ice = get_config_list("config_options", "option_value", "ice")
-ice_levels = df_ice["option_value"].tolist()
-df_sugar = get_config_list("config_options", "option_value", "sugar")
-sugar_levels = df_sugar["option_value"].tolist()
-df_tags = get_config_list("config_options", "option_value", "tags")
-custom_tags_main = df_tags["option_value"].tolist() 
-df_drink_tags = get_config_list("config_options", "option_value", "drink_tags")
-custom_tags_drink = df_drink_tags["option_value"].tolist()
+# 人員與點餐選項直接來自 Streamlit Secrets，不再同步到 SQLite。
+colleagues_list = DEFAULT_COLLEAGUES
+spicy_levels = ["無"] + DEFAULT_OPTIONS["spicy"]
+ice_levels = DEFAULT_OPTIONS["ice"]
+sugar_levels = DEFAULT_OPTIONS["sugar"]
+custom_tags_main = DEFAULT_OPTIONS["tags"]
+custom_tags_drink = DEFAULT_OPTIONS["drink_tags"]
+
 
 # ==========================================
-# 3. 側邊欄管理
+# 3. 今日點餐管理
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 開團管理")
+    st.header("⚙️ 點餐管理")
+
     st.subheader("1. 今日店家")
     db_main_shop = get_shop_name("main")
     db_drink_shop = get_shop_name("drink")
-    
+
     new_main_shop = st.text_input("主餐店家", value=db_main_shop).strip()
     new_drink_shop = st.text_input("飲料店家", value=db_drink_shop).strip()
-    
+
     if new_main_shop and new_main_shop != db_main_shop:
         set_shop_name("main", new_main_shop)
         st.rerun()
@@ -222,55 +231,28 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.subheader("2. 資料重置")
-    if "confirm_reset" not in st.session_state: st.session_state.confirm_reset = False
-    
-    if st.button("🗑️ 清空資料庫", type="secondary"): 
-        st.session_state.confirm_reset = True
-    
-    if st.session_state.confirm_reset:
-        st.warning("⚠️ 確定清空？此動作無法復原。")
-        c1, c2 = st.columns(2)
-        if c1.button("✅ 確定"):
-            execute_db("DELETE FROM orders")
-            execute_db("VACUUM")
-            st.session_state.confirm_reset = False
-            st.toast("🗑️ 資料庫已重置完成！")
-            st.rerun()
-        if c2.button("❌ 取消"):
-            st.session_state.confirm_reset = False
-            st.rerun()
-    st.divider()
+    st.subheader("2. 清除本次訂單")
 
-    with st.expander("🔧 進階設定"):
-        pwd_input = st.text_input("輸入管理員密碼", type="password", key="admin_pwd")
-        if pwd_input == ADMIN_PASSWORD:
-            st.success("🔓 已解鎖")
-            st.write("**👥 人員名單**")
-            edited_colleagues = st.data_editor(df_colleagues, num_rows="dynamic", 
-                column_config={"name": st.column_config.TextColumn("姓名", required=True)},
-                key="ed_col", width="stretch", hide_index=True)
-            if st.button("💾 儲存人員"):
-                update_config_list("config_colleagues", "name", edited_colleagues)
-                st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
-            st.divider()
-            st.write("**🛠️ 菜單選項**")
-            t1, t2, t3, t4, t5 = st.tabs(["辣度", "冰塊", "甜度", "🍱主餐客製", "🥤飲料客製"])
-            def render_opt(tab, cat, df, lbl):
-                with tab:
-                    ed = st.data_editor(df, num_rows="dynamic",
-                        column_config={"option_value": st.column_config.TextColumn(lbl, required=True)},
-                        key=f"ed_{cat}", width="stretch", hide_index=True)
-                    if st.button(f"儲存{lbl}", key=f"btn_{cat}"):
-                        update_config_list("config_options", "option_value", ed, cat)
-                        st.toast("✅ 已更新"); time.sleep(0.5); st.rerun()
-            render_opt(t1, "spicy", get_config_list("config_options", "option_value", "spicy"), "辣度")
-            render_opt(t2, "ice", get_config_list("config_options", "option_value", "ice"), "冰塊")
-            render_opt(t3, "sugar", get_config_list("config_options", "option_value", "sugar"), "甜度")
-            render_opt(t4, "tags", get_config_list("config_options", "option_value", "tags"), "主餐客製")
-            render_opt(t5, "drink_tags", get_config_list("config_options", "option_value", "drink_tags"), "飲料客製")
-        elif pwd_input: st.error("🚫 密碼錯誤")
-        else: st.caption("修改人員或菜單需驗證")
+    if "confirm_reset" not in st.session_state:
+        st.session_state.confirm_reset = False
+
+    if st.button("🗑️ 清除本次訂單", type="secondary"):
+        st.session_state.confirm_reset = True
+
+    if st.session_state.confirm_reset:
+        st.warning("⚠️ 確定清除本次所有訂單？此動作無法復原。")
+        c1, c2 = st.columns(2)
+
+        if c1.button("✅ 確定", key="confirm_reset_orders"):
+            if execute_db("DELETE FROM orders"):
+                st.session_state.confirm_reset = False
+                st.toast("🗑️ 本次訂單已清除！")
+                st.rerun()
+
+        if c2.button("❌ 取消", key="cancel_reset_orders"):
+            st.session_state.confirm_reset = False
+            st.rerun()
+
 
 # ==========================================
 # 4. 統計看板 (全域去框線版本，移除編號)
@@ -482,23 +464,53 @@ def custom_dialog(key_prefix, tag_options):
 
 @st.dialog("✏️ 編輯餐點")
 def edit_order_dialog(order_id, cur_name, cur_price_total, cur_qty, cur_custom):
-    unit_price = cur_price_total // cur_qty if cur_qty > 0 else 0
+    # 防止 Dialog 開啟後，其他人先完成收款而造成付款狀態不一致。
+    current = get_db("SELECT is_paid, unit_price FROM orders WHERE id = ?", (order_id,))
+    if current.empty:
+        st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
+        return
+    if int(current.iloc[0]["is_paid"] or 0) == 1:
+        st.warning("🔒 這筆訂單已付款，無法修改。")
+        return
+
+    db_unit_price = current.iloc[0]["unit_price"]
+    if pd.isna(db_unit_price):
+        # 舊版資料若沒有可精確還原的單價，要求重新確認單價。
+        unit_price = 0
+        st.warning("⚠️ 這是舊版資料，原始單價無法精確還原，請重新輸入單價。")
+    else:
+        unit_price = int(db_unit_price)
+
     new_name = st.text_input("餐點名稱", value=cur_name).strip()
-    
+
     c_p, c_q = st.columns(2)
     new_unit_price = c_p.number_input("單價", min_value=0, step=5, value=unit_price)
-    new_qty = c_q.number_input("數量", min_value=1, step=1, value=cur_qty)
+    new_qty = c_q.number_input("數量", min_value=1, step=1, value=int(cur_qty))
     new_custom = st.text_input("客製化備註", value=cur_custom).strip()
 
     if st.button("💾 儲存修改", type="primary", use_container_width=True):
+        # 儲存前再查一次，並由 SQL 本身限制只能修改未付款訂單。
+        current_check = get_db("SELECT is_paid FROM orders WHERE id = ?", (order_id,))
+        if current_check.empty:
+            st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
+            return
+        if int(current_check.iloc[0]["is_paid"] or 0) == 1:
+            st.error("🔒 這筆訂單已付款，無法修改。")
+            return
+
         if not new_name:
             st.error("餐點名稱不能為空")
             return
-        new_total = new_unit_price * new_qty
-        execute_db("UPDATE orders SET item_name=?, price=?, quantity=?, custom=? WHERE id=?",
-                   (new_name, new_total, new_qty, new_custom, order_id))
-        st.toast("✅ 餐點已成功更新！")
-        st.rerun()
+
+        new_total = int(new_unit_price) * int(new_qty)
+        if execute_db(
+            "UPDATE orders SET item_name=?, price=?, quantity=?, unit_price=?, custom=? "
+            "WHERE id=? AND is_paid=0",
+            (new_name, new_total, int(new_qty), int(new_unit_price), new_custom, order_id)
+        ):
+            st.toast("✅ 餐點已成功更新！")
+            st.rerun()
+
 
 if 'user_name' not in st.session_state: st.session_state['user_name'] = None
 if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
@@ -548,14 +560,39 @@ with tab1:
                     f'</div>', unsafe_allow_html=True
                 )
                 
-                if c_btn1.button("✏️", key=f"btn_edit_{row['id']}", help="修改", use_container_width=True):
-                    edit_order_dialog(row['id'], row['item_name'], row['price'], row['quantity'], row['custom'])
-                
-                with c_btn2.popover("🗑️", help="刪除", use_container_width=True):
-                    st.write(f"刪除 **{safe_item_name}**？")
-                    if st.button("⭕ 確認", key=f"confirm_del_{row['id']}", type="primary", use_container_width=True):
-                        execute_db("DELETE FROM orders WHERE id = ?", (row['id'],))
-                        st.toast("✅ 已刪除"); st.rerun()
+                is_paid = int(row["is_paid"] or 0) == 1
+
+                if c_btn1.button(
+                    "🔒" if is_paid else "✏️",
+                    key=f"btn_edit_{row['id']}",
+                    help="已付款，無法修改" if is_paid else "修改",
+                    use_container_width=True,
+                    disabled=is_paid
+                ):
+                    edit_order_dialog(
+                        row['id'],
+                        row['item_name'],
+                        row['price'],
+                        row['quantity'],
+                        row['custom']
+                    )
+
+                if is_paid:
+                    c_btn2.button(
+                        "🔒",
+                        key=f"btn_del_locked_{row['id']}",
+                        help="已付款，無法刪除",
+                        use_container_width=True,
+                        disabled=True
+                    )
+                else:
+                    with c_btn2.popover("🗑️", help="刪除", use_container_width=True):
+                        st.write(f"刪除 **{safe_item_name}**？")
+                        if st.button("⭕ 確認", key=f"confirm_del_{row['id']}", type="primary", use_container_width=True):
+                            # SQL 再次檢查 is_paid，避免畫面舊資料造成誤刪。
+                            if execute_db("DELETE FROM orders WHERE id = ? AND is_paid = 0", (row['id'],)):
+                                st.toast("✅ 已刪除")
+                                st.rerun()
                 
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
     st.write("") 
@@ -604,13 +641,19 @@ with tab1:
                     if display_list: parts.append(", ".join(display_list))
                     cust = ", ".join(parts) if parts else ""
                     
-                    total_p = m_price_unit * m_qty
-                    if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                                  (user_name, "主餐", m_name, total_p, cust, m_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
+                    total_p = int(m_price_unit) * int(m_qty)
+                    if execute_db(
+                        "INSERT INTO orders "
+                        "(name, category, item_name, price, custom, quantity, order_time, is_paid, unit_price) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                        (
+                            user_name, "主餐", m_name, total_p, cust, int(m_qty),
+                            datetime.now().strftime('%Y-%m-%d %H:%M'), int(m_price_unit)
+                        )
+                    ):
+                        # 只清除剛剛送出的主餐客製化，不影響尚未送出的飲料設定。
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
-                        st.session_state["d_custom_tags"] = []
-                        st.session_state["d_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} ×{m_qty}"); st.rerun()
                 else: st.toast("⚠️ 請輸入主餐名稱")
 
@@ -624,9 +667,31 @@ with tab1:
             d_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
             
-            d_size = st.pills("尺寸", ["M(中杯)", "L(大杯)", "XL(特大杯)"], default="L(大杯)", key="d_size", selection_mode="single")
-            d_sugar = st.pills("甜度", sugar_levels, default=sugar_levels[0], key="d_sugar", selection_mode="single")
-            d_ice = st.pills("冰塊", ice_levels, default=ice_levels[0], key="d_ice", selection_mode="single")
+            d_size = st.pills(
+                "尺寸",
+                ["M(中杯)", "L(大杯)", "XL(特大杯)"],
+                default="L(大杯)",
+                key="d_size",
+                selection_mode="single"
+            )
+
+            if sugar_levels:
+                d_sugar = st.pills(
+                    "甜度", sugar_levels, default=sugar_levels[0],
+                    key="d_sugar", selection_mode="single"
+                )
+            else:
+                d_sugar = None
+                st.caption("甜度：目前沒有可選項目")
+
+            if ice_levels:
+                d_ice = st.pills(
+                    "冰塊", ice_levels, default=ice_levels[0],
+                    key="d_ice", selection_mode="single"
+                )
+            else:
+                d_ice = None
+                st.caption("冰塊：目前沒有可選項目")
             
             d_current_tags = st.session_state.get("d_custom_tags", [])
             d_current_manual = st.session_state.get("d_custom_manual", "")
@@ -652,17 +717,25 @@ with tab1:
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    base_config = f"{d_size}/{d_sugar}/{d_ice}"
+                    drink_options = [d_size, d_sugar, d_ice]
+                    base_config = "/".join(str(value) for value in drink_options if value)
                     final_cust = base_config
-                    if d_display_list: final_cust += f", {', '.join(d_display_list)}"
+                    if d_display_list:
+                        final_cust += f"{', ' if final_cust else ''}{', '.join(d_display_list)}"
 
-                    total_p = d_price_unit * d_qty
-                    if execute_db("INSERT INTO orders (name, category, item_name, price, custom, quantity, order_time, is_paid) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                                  (user_name, "飲料", d_name, total_p, final_cust, d_qty, datetime.now().strftime('%Y-%m-%d %H:%M'))):
+                    total_p = int(d_price_unit) * int(d_qty)
+                    if execute_db(
+                        "INSERT INTO orders "
+                        "(name, category, item_name, price, custom, quantity, order_time, is_paid, unit_price) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                        (
+                            user_name, "飲料", d_name, total_p, final_cust, int(d_qty),
+                            datetime.now().strftime('%Y-%m-%d %H:%M'), int(d_price_unit)
+                        )
+                    ):
+                        # 只清除剛剛送出的飲料客製化，不影響尚未送出的主餐設定。
                         st.session_state["d_custom_tags"] = []
                         st.session_state["d_custom_manual"] = ""
-                        st.session_state["m_custom_tags"] = []
-                        st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{d_name} ×{d_qty}"); st.rerun()
                 else: st.toast("⚠️ 請輸入飲料名稱")
 
