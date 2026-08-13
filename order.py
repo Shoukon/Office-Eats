@@ -19,7 +19,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.3", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.4", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -555,9 +555,9 @@ def custom_dialog(key_prefix, tag_options):
         st.rerun()
 
 @st.dialog("✏️ 編輯餐點")
-def edit_order_dialog(order_id, cur_name, cur_price_total, cur_qty, cur_custom):
+def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cur_custom):
     # 防止 Dialog 開啟後，其他人先完成收款而造成付款狀態不一致。
-    current = get_db("SELECT is_paid, unit_price FROM orders WHERE id = ?", (order_id,))
+    current = get_db("SELECT is_paid, unit_price, category FROM orders WHERE id = ?", (order_id,))
     if current.empty:
         st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
         return
@@ -565,20 +565,271 @@ def edit_order_dialog(order_id, cur_name, cur_price_total, cur_qty, cur_custom):
         st.warning("🔒 這筆訂單已付款，無法修改。")
         return
 
+    # 以資料庫實際 category 為準，避免畫面傳入值與資料庫不一致。
+    edit_category = str(current.iloc[0]["category"] or category)
+
     db_unit_price = current.iloc[0]["unit_price"]
     if pd.isna(db_unit_price):
-        # 舊版資料若沒有可精確還原的單價，要求重新確認單價。
         unit_price = 0
         st.warning("⚠️ 這是舊版資料，原始單價無法精確還原，請重新輸入單價。")
     else:
         unit_price = int(db_unit_price)
 
-    new_name = st.text_input("餐點名稱", value=cur_name).strip()
+    new_name = st.text_input(
+        "主餐名稱" if edit_category == "主餐" else "飲料名稱",
+        value=str(cur_name)
+    ).strip()
 
     c_p, c_q = st.columns(2)
     new_unit_price = c_p.number_input("單價", min_value=0, step=5, value=unit_price)
     new_qty = c_q.number_input("數量", min_value=1, step=1, value=int(cur_qty))
-    new_custom = st.text_input("客製化備註", value=cur_custom).strip()
+
+    # ------------------------------------------------------
+    # 主餐：與新增主餐相同的辣度 + 客製化快速選項 + 手動輸入
+    # ------------------------------------------------------
+    if edit_category == "主餐":
+        # 解析既有 custom：
+        # 第一個區段若是目前辣度選項，就視為辣度；
+        # 其餘符合快速選項者恢復成已選按鈕，剩餘內容保留為手動客製。
+        raw_custom = str(cur_custom or "").strip()
+        main_spicy = None
+        main_tags = []
+        main_manual = ""
+
+        custom_parts = [
+            part.strip() for part in raw_custom.split(",")
+            if part is not None and part.strip()
+        ]
+
+        if custom_parts and custom_parts[0] in spicy_levels:
+            main_spicy = custom_parts.pop(0)
+
+        valid_main_tags = {str(v) for v in custom_tags_main}
+        recognized_tags = []
+        manual_parts = []
+        for part in custom_parts:
+            if part in valid_main_tags:
+                recognized_tags.append(part)
+            else:
+                manual_parts.append(part)
+
+        main_tags = recognized_tags
+        main_manual = ", ".join(manual_parts)
+
+        # Widget key 使用 order_id，避免不同編輯 Dialog 之間互相污染。
+        spicy_key = f"edit_m_spicy_{order_id}"
+        tags_key = f"edit_m_tags_{order_id}"
+        manual_key = f"edit_m_manual_{order_id}"
+
+        if spicy_key not in st.session_state:
+            st.session_state[spicy_key] = main_spicy if main_spicy in spicy_levels else (spicy_levels[0] if spicy_levels else None)
+        if tags_key not in st.session_state:
+            st.session_state[tags_key] = main_tags
+        if manual_key not in st.session_state:
+            st.session_state[manual_key] = main_manual
+
+        if spicy_levels:
+            if st.session_state.get(spicy_key) not in spicy_levels:
+                st.session_state[spicy_key] = spicy_levels[0]
+            edit_spicy = st.pills(
+                "辣度",
+                spicy_levels,
+                default=spicy_levels[0],
+                key=spicy_key,
+                selection_mode="single"
+            )
+        else:
+            edit_spicy = None
+            st.caption("辣度：目前沒有可選項目")
+
+        current_tags = st.session_state.get(tags_key, [])
+        valid_tag_set = {str(v) for v in custom_tags_main}
+        current_tags = [
+            str(v) for v in current_tags
+            if v is not None and str(v) in valid_tag_set
+        ]
+        st.session_state[tags_key] = current_tags
+
+        if custom_tags_main:
+            edit_tags = st.pills(
+                "快速客製選項（可複選）",
+                custom_tags_main,
+                default=current_tags,
+                key=f"{tags_key}_widget",
+                selection_mode="multi"
+            )
+        else:
+            edit_tags = []
+            st.caption("目前沒有快速客製選項")
+
+        edit_manual = st.text_input(
+            "手動客製",
+            value=st.session_state.get(manual_key, ""),
+            placeholder="如：不要XXX...或是加XXX...",
+            key=f"{manual_key}_widget"
+        ).strip()
+
+        # --------------------------------------------------
+        # 儲存前重新組合成與新增主餐一致的 custom 格式
+        # --------------------------------------------------
+        clean_tags = [
+            str(v).strip() for v in edit_tags
+            if v is not None and str(v).strip()
+        ]
+        parts = []
+        if edit_spicy and str(edit_spicy).strip() != "無":
+            parts.append(str(edit_spicy).strip())
+        if clean_tags:
+            parts.append(", ".join(clean_tags))
+        if edit_manual:
+            parts.append(edit_manual)
+
+        new_custom = ", ".join(parts) if parts else ""
+
+    # ------------------------------------------------------
+    # 飲料：與新增飲料相同的尺寸 + 甜度 + 冰塊 + 客製化
+    # ------------------------------------------------------
+    else:
+        raw_custom = str(cur_custom or "").strip()
+
+        drink_size_key = f"edit_d_size_{order_id}"
+        drink_sugar_key = f"edit_d_sugar_{order_id}"
+        drink_ice_key = f"edit_d_ice_{order_id}"
+        drink_tags_key = f"edit_d_tags_{order_id}"
+        drink_manual_key = f"edit_d_manual_{order_id}"
+
+        # 先用目前可用選項組成 prefix，從既有 custom 拆出基本飲料設定。
+        available_size_values = ["M(中杯)", "L(大杯)", "XL(特大杯)"]
+        parsed_size = "L(大杯)"
+        parsed_sugar = sugar_levels[0] if sugar_levels else None
+        parsed_ice = ice_levels[0] if ice_levels else None
+        remainder = raw_custom
+
+        # custom 的基本格式是：尺寸/甜度/冰塊[, 客製...]
+        base_part, separator, tag_part = raw_custom.partition(",")
+        base_values = [v.strip() for v in base_part.split("/") if v.strip()]
+
+        if base_values:
+            if base_values[0] in available_size_values:
+                parsed_size = base_values[0]
+            if len(base_values) > 1 and base_values[1] in sugar_levels:
+                parsed_sugar = base_values[1]
+            if len(base_values) > 2 and base_values[2] in ice_levels:
+                parsed_ice = base_values[2]
+
+            # 如果第一段不是標準飲料設定，保守保留整段作為手動客製。
+            recognized_base_count = (
+                (1 if base_values[0] in available_size_values else 0)
+                + (1 if len(base_values) > 1 and base_values[1] in sugar_levels else 0)
+                + (1 if len(base_values) > 2 and base_values[2] in ice_levels else 0)
+            )
+            if recognized_base_count >= 1:
+                remainder = tag_part.strip() if separator else ""
+            else:
+                remainder = raw_custom
+
+        if drink_size_key not in st.session_state:
+            st.session_state[drink_size_key] = parsed_size
+        if drink_sugar_key not in st.session_state:
+            st.session_state[drink_sugar_key] = parsed_sugar
+        if drink_ice_key not in st.session_state:
+            st.session_state[drink_ice_key] = parsed_ice
+
+        if st.session_state.get(drink_size_key) not in available_size_values:
+            st.session_state[drink_size_key] = available_size_values[1]
+        edit_size = st.pills(
+            "尺寸",
+            available_size_values,
+            default="L(大杯)",
+            key=drink_size_key,
+            selection_mode="single"
+        )
+
+        if sugar_levels:
+            if st.session_state.get(drink_sugar_key) not in sugar_levels:
+                st.session_state[drink_sugar_key] = sugar_levels[0]
+            edit_sugar = st.pills(
+                "甜度",
+                sugar_levels,
+                default=sugar_levels[0],
+                key=drink_sugar_key,
+                selection_mode="single"
+            )
+        else:
+            edit_sugar = None
+            st.caption("甜度：目前沒有可選項目")
+
+        if ice_levels:
+            if st.session_state.get(drink_ice_key) not in ice_levels:
+                st.session_state[drink_ice_key] = ice_levels[0]
+            edit_ice = st.pills(
+                "冰塊",
+                ice_levels,
+                default=ice_levels[0],
+                key=drink_ice_key,
+                selection_mode="single"
+            )
+        else:
+            edit_ice = None
+            st.caption("冰塊：目前沒有可選項目")
+
+        # 從 remainder 恢復快速客製與手動客製。
+        valid_drink_tags = {str(v) for v in custom_tags_drink}
+        parsed_tags = []
+        manual_parts = []
+        for part in [
+            p.strip() for p in remainder.split(",")
+            if p is not None and p.strip()
+        ]:
+            if part in valid_drink_tags:
+                parsed_tags.append(part)
+            else:
+                manual_parts.append(part)
+
+        if drink_tags_key not in st.session_state:
+            st.session_state[drink_tags_key] = parsed_tags
+        if drink_manual_key not in st.session_state:
+            st.session_state[drink_manual_key] = ", ".join(manual_parts)
+
+        current_drink_tags = [
+            str(v) for v in st.session_state.get(drink_tags_key, [])
+            if v is not None and str(v) in valid_drink_tags
+        ]
+        st.session_state[drink_tags_key] = current_drink_tags
+
+        if custom_tags_drink:
+            edit_drink_tags = st.pills(
+                "快速客製選項（可複選）",
+                custom_tags_drink,
+                default=current_drink_tags,
+                key=f"{drink_tags_key}_widget",
+                selection_mode="multi"
+            )
+        else:
+            edit_drink_tags = []
+            st.caption("目前沒有快速客製選項")
+
+        edit_drink_manual = st.text_input(
+            "手動客製",
+            value=st.session_state.get(drink_manual_key, ""),
+            placeholder="如：加XXX、不要XXX...",
+            key=f"{drink_manual_key}_widget"
+        ).strip()
+
+        clean_drink_options = [
+            str(v).strip() for v in [edit_size, edit_sugar, edit_ice]
+            if v is not None and str(v).strip()
+        ]
+        new_custom = "/".join(clean_drink_options)
+
+        clean_drink_tags = [
+            str(v).strip() for v in edit_drink_tags
+            if v is not None and str(v).strip()
+        ]
+        if clean_drink_tags:
+            new_custom += f"{', ' if new_custom else ''}{', '.join(clean_drink_tags)}"
+        if edit_drink_manual:
+            new_custom += f"{', ' if new_custom else ''}{edit_drink_manual}"
 
     if st.button("💾 儲存修改", type="primary", use_container_width=True):
         # 儲存前再查一次，並由 SQL 本身限制只能修改未付款訂單。
@@ -663,6 +914,7 @@ with tab1:
                 ):
                     edit_order_dialog(
                         row['id'],
+                        row['category'],
                         row['item_name'],
                         row['price'],
                         row['quantity'],
