@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.10", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.11", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -334,42 +334,88 @@ def render_stats_section():
     df_all = get_orders_df()
     if df_all.empty: st.info("📦 目前尚無訂單，等待第一筆資料..."); return
 
-    def format_stats_custom(category, raw_custom):
+    def parse_stats_custom(category, raw_custom):
         """
-        店家統計看板專用的客製化顯示格式。
-        不修改資料庫原始 custom，只在顯示時重新整理：
-        - 主餐尺寸「無」：不顯示
-        - 主餐辣度「無」：顯示為「不辣」
-        - 主餐有尺寸：尺寸放在最前面
-        - 其他客製：照原本內容接在後面
+        店家統計看板顯示與排序。
+
+        主餐排序：
+          尺寸：無（不顯示）→ 小份 → 大份
+          辣度：無 → 微辣 → 小辣 → 中辣 → 大辣
+
+        飲料排序：
+          尺寸：M → L → XL
+          甜度：無糖 → 一分糖 → 微糖 → 少糖 → 半糖 → 正常糖
+          冰塊：完全去冰 → 去冰 → 微冰 → 少冰 → 正常冰 → 溫 → 熱
+
+        只改統計看板的顯示與排序，不修改資料庫原始 custom。
         """
         raw = str(raw_custom or "").strip()
         if not raw:
-            return ""
+            return "", 0, 0, 0, ""
 
         parts = [p.strip() for p in raw.split(",") if p is not None and p.strip()]
 
         if category == "主餐":
-            result = []
+            size_order = {"": 0, "小份": 1, "大份": 2}
+            spicy_order = {"無": 0, "微辣": 1, "小辣": 2, "中辣": 3, "大辣": 4}
 
-            # 新格式：尺寸, 辣度, 其他客製...
-            # 舊格式：辣度, 其他客製...
+            size = ""
+            spicy = ""
+
+            # 新格式：尺寸, 辣度, 其他客製
             if parts and parts[0] in ("小份", "大份"):
-                result.append(parts.pop(0))
+                size = parts.pop(0)
 
-            # 辣度「無」在店家看板顯示為「不辣」。
-            if parts and parts[0] in ("無", "微辣", "小辣", "中辣", "大辣"):
+            # 新格式（無尺寸）或舊格式：第一個欄位直接是辣度。
+            if parts and parts[0] in spicy_order:
                 spicy = parts.pop(0)
-                if spicy == "無":
-                    result.append("不辣")
-                else:
-                    result.append(spicy)
 
-            result.extend(parts)
-            return "・".join(result)
+            display_parts = []
+            if size:
+                display_parts.append(size)
+            if spicy:
+                display_parts.append("不辣" if spicy == "無" else spicy)
+            display_parts.extend(parts)
 
-        # 飲料及其他類別維持既有顯示格式。
-        return raw
+            return (
+                "・".join(display_parts),
+                size_order.get(size, 0),
+                spicy_order.get(spicy, 99),
+                0,
+                "・".join(parts),
+            )
+
+        if category == "飲料":
+            size_order = {"M(中杯)": 0, "L(大杯)": 1, "XL(特大杯)": 2}
+            sugar_order = {
+                "無糖": 0, "一分糖": 1, "微糖": 2,
+                "少糖": 3, "半糖": 4, "正常糖": 5,
+            }
+            ice_order = {
+                "完全去冰": 0, "去冰": 1, "微冰": 2,
+                "少冰": 3, "正常冰": 4, "溫": 5, "熱": 6,
+            }
+
+            size = parts.pop(0) if parts and parts[0] in size_order else ""
+            sugar = parts.pop(0) if parts and parts[0] in sugar_order else ""
+            ice = parts.pop(0) if parts and parts[0] in ice_order else ""
+
+            display_parts = [x for x in (size, sugar, ice) if x]
+            display_parts.extend(parts)
+
+            return (
+                "・".join(display_parts),
+                size_order.get(size, 99),
+                sugar_order.get(sugar, 99),
+                ice_order.get(ice, 99),
+                "・".join(parts),
+            )
+
+        return raw, 99, 99, 99, raw
+
+
+    def format_stats_custom(category, raw_custom):
+        return parse_stats_custom(category, raw_custom)[0]
 
     def show_stats_optimized(df_source, title, icon_class):
         # 獨立副本，避免統計區塊互相修改 DataFrame。
@@ -412,10 +458,19 @@ def render_stats_section():
         )
 
         # 店家看板只改「顯示內容」，不改資料庫原始 custom。
-        df_source['stats_custom'] = df_source.apply(
-            lambda row: format_stats_custom(row["category"], row["custom"]),
-            axis=1
+        stats_parsed = df_source.apply(
+            lambda row: parse_stats_custom(row["category"], row["custom"]),
+            axis=1,
+            result_type="expand"
         )
+        stats_parsed.columns = [
+            "stats_custom",
+            "stats_order_1",
+            "stats_order_2",
+            "stats_order_3",
+            "stats_order_4",
+        ]
+        df_source = pd.concat([df_source, stats_parsed], axis=1)
 
         c_sum, c_det = st.columns([1, 1.2])
 
@@ -453,9 +508,28 @@ def render_stats_section():
                         # 同一餐點底下，再依客製化統計，讓店家知道各種客製要做幾份。
                         custom_group = (
                             item_group[item_group["stats_custom"] != ""]
-                            .groupby("stats_custom", dropna=False)["quantity"]
+                            .groupby(
+                                [
+                                    "stats_custom",
+                                    "stats_order_1",
+                                    "stats_order_2",
+                                    "stats_order_3",
+                                    "stats_order_4",
+                                ],
+                                dropna=False,
+                                as_index=False,
+                            )["quantity"]
                             .sum()
-                            .reset_index()
+                            .sort_values(
+                                [
+                                    "stats_order_1",
+                                    "stats_order_2",
+                                    "stats_order_3",
+                                    "stats_order_4",
+                                    "stats_custom",
+                                ],
+                                kind="stable",
+                            )
                         )
 
                         for _, custom_row in custom_group.iterrows():
@@ -473,6 +547,10 @@ def render_stats_section():
             st.markdown("**📋 明細表 (核對用)**")
             grouped_by_person = df_source.groupby('name')
             for name, group in grouped_by_person:
+                group = group.sort_values(
+                    ["stats_order_1", "stats_order_2", "stats_order_3", "stats_order_4", "stats_custom"],
+                    kind="stable",
+                )
                 with st.container():
                     safe_user = html.escape(str(name))
                     st.markdown(f'<div style="font-size:1.15rem; font-weight:700; margin-bottom:6px; color:var(--text-color);">👤 {safe_user}</div>', unsafe_allow_html=True)
