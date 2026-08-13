@@ -112,7 +112,7 @@ custom_css = """
 
     /* 客製需求文字：降低視覺權重，但保持足夠辨識度 */
     .custom-text {
-        font-size: 1.0rem; color: #95a5a6; margin-top: 2px; line-height: 1.4;
+        font-size: 1.0rem; color: color-mix(in srgb, var(--text-color) 30%, transparent); margin-top: 2px; line-height: 1.4;
     }
 
     /* 結構化分隔線 */
@@ -227,47 +227,21 @@ def execute_db(query, params=()):
 
 def get_db(query, params=()):
     max_retries = 3
-    last_error = None
-
     for _ in range(max_retries):
-        conn = None
         try:
             conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
             df = pd.read_sql_query(query, conn, params=params)
-            df.attrs["db_error"] = False
+            conn.close()
             return df
         except sqlite3.OperationalError as e:
-            last_error = e
-            if "locked" in str(e).lower():
-                time.sleep(0.2)
-            else:
-                break
-        except Exception as e:
-            last_error = e
-            break
-        finally:
-            if conn is not None:
-                conn.close()
-
-    # 保持原本回傳 DataFrame 的介面，但留下明確旗標，
-    # 讓統計／收款區可以區分「真的沒有訂單」與「資料庫暫時讀取失敗」。
-    failed_df = pd.DataFrame()
-    failed_df.attrs["db_error"] = True
-    failed_df.attrs["db_error_message"] = str(last_error) if last_error else "Unknown database read error"
-    return failed_df
+            if "locked" in str(e): time.sleep(0.2)
+            else: break
+        except Exception: break
+    return pd.DataFrame()
 
 def get_orders_df():
-    """安全讀取 orders；保留「無資料」與「讀取失敗」的差異。"""
+    """安全讀取 orders；失敗/無資料時仍保留固定欄位。"""
     df = get_db("SELECT * FROM orders")
-
-    if df.attrs.get("db_error", False):
-        failed_df = pd.DataFrame(columns=ORDER_COLUMNS)
-        failed_df.attrs["db_error"] = True
-        failed_df.attrs["db_error_message"] = df.attrs.get(
-            "db_error_message", "Unknown database read error"
-        )
-        return failed_df
-
     if df.empty:
         return pd.DataFrame(columns=ORDER_COLUMNS)
 
@@ -278,9 +252,7 @@ def get_orders_df():
             else:
                 df[column] = ""
 
-    result = df[ORDER_COLUMNS].copy()
-    result.attrs["db_error"] = False
-    return result
+    return df[ORDER_COLUMNS].copy()
 
 
 def get_shop_name(cat):
@@ -364,12 +336,7 @@ def render_stats_section():
     r_name = get_shop_name("main")
     d_name = get_shop_name("drink")
     df_all = get_orders_df()
-    if df_all.attrs.get("db_error", False):
-        st.error("⚠️ 暫時無法讀取訂單資料，請稍後重新整理。")
-        return
-    if df_all.empty:
-        st.info("📦 目前尚無訂單，等待第一筆資料...")
-        return
+    if df_all.empty: st.info("📦 目前尚無訂單，等待第一筆資料..."); return
 
     def parse_stats_custom(category, raw_custom):
         """
@@ -1034,7 +1001,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         if st.session_state.get(drink_size_key) not in available_size_values:
             st.session_state[drink_size_key] = available_size_values[1]
         edit_size = st.pills(
-            "尺寸（必選）",
+            "尺寸",
             available_size_values,
             default="L(大杯)",
             key=drink_size_key,
