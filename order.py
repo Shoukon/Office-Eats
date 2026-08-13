@@ -112,7 +112,7 @@ custom_css = """
 
     /* 客製需求文字：降低視覺權重，但保持足夠辨識度 */
     .custom-text {
-        font-size: 1.0rem; color: color-mix(in srgb, var(--text-color) 62%, transparent); margin-top: 2px; line-height: 1.4;
+        font-size: 1.0rem; color: color-mix(in srgb, var(--text-color) 52%, transparent); margin-top: 2px; line-height: 1.4;
     }
 
     /* 結構化分隔線 */
@@ -168,7 +168,7 @@ def unique_clean_list(values):
 DEFAULT_COLLEAGUES, DEFAULT_OPTIONS = get_settings_from_secrets()
 DEFAULT_COLLEAGUES = unique_clean_list(DEFAULT_COLLEAGUES)
 if not DEFAULT_COLLEAGUES:
-    DEFAULT_COLLEAGUES = ["請在 Streamlit Secrets 的 [settings] 設定人員"]
+    DEFAULT_COLLEAGUES = ["請在 Streamlit Secrets 的 [default_settings] 設定人員"]
 
 for _key in DEFAULT_OPTIONS:
     DEFAULT_OPTIONS[_key] = unique_clean_list(DEFAULT_OPTIONS[_key])
@@ -215,9 +215,10 @@ def execute_db(query, params=()):
             conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
             c = conn.cursor()
             c.execute(query, params)
+            affected_rows = c.rowcount
             conn.commit()
             conn.close()
-            return True
+            return affected_rows
         except sqlite3.OperationalError as e:
             if "locked" in str(e): time.sleep(0.1)
             else: raise e
@@ -260,7 +261,10 @@ def get_shop_name(cat):
     return "未設定"
 
 def set_shop_name(cat, name):
-    execute_db("UPDATE config_shop SET shop_name = ? WHERE category = ?", (name, cat))
+    return bool(execute_db(
+        "UPDATE config_shop SET shop_name = ? WHERE category = ?",
+        (name, cat)
+    ))
 
 init_db()
 
@@ -287,11 +291,11 @@ with st.sidebar:
     new_drink_shop = st.text_input("飲料店家", value=db_drink_shop).strip()
 
     if new_main_shop and new_main_shop != db_main_shop:
-        set_shop_name("main", new_main_shop)
-        st.rerun()
+        if set_shop_name("main", new_main_shop):
+            st.rerun()
     if new_drink_shop and new_drink_shop != db_drink_shop:
-        set_shop_name("drink", new_drink_shop)
-        st.rerun()
+        if set_shop_name("drink", new_drink_shop):
+            st.rerun()
 
     st.divider()
     st.subheader("2. 清空本次訂單")
@@ -415,23 +419,28 @@ def render_stats_section():
             sugar = base_values[1] if len(base_values) > 1 and base_values[1] in sugar_order else ""
             ice = base_values[2] if len(base_values) > 2 and base_values[2] in ice_order else ""
 
-            # 只有被辨識為標準飲料設定的部分才從顯示中拆開。
-            recognized_count = 0
-            if size:
-                recognized_count += 1
-            if sugar:
-                recognized_count += 1
-            if ice:
-                recognized_count += 1
+            recognized_count = sum(
+                value is not None and bool(value)
+                for value in (size, sugar, ice)
+            )
 
-            if recognized_count:
-                extra_parts = [
+            # 保留任何未被辨識的基本欄位，避免舊資料或手動資料在看板上消失。
+            recognized_base_values = [
+                value for value in (size, sugar, ice) if value
+            ]
+            unknown_base_values = [
+                value for value in base_values
+                if value not in recognized_base_values
+            ]
+            extra_parts = unknown_base_values + (
+                [
                     value.strip()
                     for value in tag_part.split(",")
                     if value is not None and value.strip()
                 ] if separator else []
-            else:
-                # 保守處理非標準舊資料，避免誤拆。
+            )
+
+            if not recognized_count and not extra_parts:
                 extra_parts = parts
 
             # 與主餐統一：所有基本設定與客製項目都用「・」分隔。
@@ -680,8 +689,15 @@ def _pay_logic_grouped(cat, df, k):
                 with c_btn:
                     if st.button("確認收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
                         placeholders = ','.join('?' * len(ids))
-                        execute_db(f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders})", tuple(ids))
-                        st.toast(f"💰 已完成收款：{name} (${total_price})"); st.rerun(scope="fragment")
+                        affected = execute_db(
+                            f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders}) AND is_paid = 0",
+                            tuple(ids)
+                        )
+                        if affected == len(ids):
+                            st.toast(f"💰 已完成收款：{name} (${total_price})")
+                            st.rerun(scope="fragment")
+                        else:
+                            st.error("⚠️ 收款狀態未完整更新，請重新整理後確認。")
                 
                 for _, row in group.iterrows():
                     safe_item = html.escape(str(row["item_name"]))
@@ -714,8 +730,15 @@ def _pay_logic_grouped(cat, df, k):
                 with c2:
                     if st.button("撤銷收款", key=f"undo_{k}_{name}", use_container_width=True):
                         placeholders = ','.join('?' * len(ids))
-                        execute_db(f"UPDATE orders SET is_paid = 0 WHERE id IN ({placeholders})", tuple(ids))
-                        st.toast(f"↩️ 已撤銷收款：{name}"); st.rerun(scope="fragment")
+                        affected = execute_db(
+                            f"UPDATE orders SET is_paid = 0 WHERE id IN ({placeholders}) AND is_paid = 1",
+                            tuple(ids)
+                        )
+                        if affected == len(ids):
+                            st.toast(f"↩️ 已撤銷收款：{name}")
+                            st.rerun(scope="fragment")
+                        else:
+                            st.error("⚠️ 收款狀態未完整更新，請重新整理後確認。")
 
 # ==========================================
 # 6. 主畫面與 Dialogs 邏輯
@@ -944,23 +967,29 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         base_values = [v.strip() for v in base_part.split("/") if v.strip()]
 
         if base_values:
+            recognized_base_values = []
             if base_values[0] in available_size_values:
                 parsed_size = base_values[0]
+                recognized_base_values.append(base_values[0])
             if len(base_values) > 1 and base_values[1] in sugar_levels:
                 parsed_sugar = base_values[1]
+                recognized_base_values.append(base_values[1])
             if len(base_values) > 2 and base_values[2] in ice_levels:
                 parsed_ice = base_values[2]
+                recognized_base_values.append(base_values[2])
 
-            # 如果第一段不是標準飲料設定，保守保留整段作為手動客製。
-            recognized_base_count = (
-                (1 if base_values[0] in available_size_values else 0)
-                + (1 if len(base_values) > 1 and base_values[1] in sugar_levels else 0)
-                + (1 if len(base_values) > 2 and base_values[2] in ice_levels else 0)
+            unknown_base_values = [
+                value for value in base_values
+                if value not in recognized_base_values
+            ]
+            trailing_tags = (
+                [p.strip() for p in tag_part.split(",") if p and p.strip()]
+                if separator else []
             )
-            if recognized_base_count >= 1:
-                remainder = tag_part.strip() if separator else ""
-            else:
-                remainder = raw_custom
+
+            # 未辨識欄位與原有客製需求都保留，避免編輯後資料遺失。
+            remainder_parts = unknown_base_values + trailing_tags
+            remainder = ", ".join(remainder_parts)
 
         if drink_size_key not in st.session_state:
             st.session_state[drink_size_key] = parsed_size
@@ -1089,6 +1118,14 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             "WHERE id=? AND is_paid=0",
             (new_name, new_total, int(new_qty), int(new_unit_price), new_custom, order_id)
         ):
+            # 清除本筆編輯狀態，避免下次重新開啟同一筆訂單時沿用舊 session state。
+            for _prefix in (
+                "edit_m_size_", "edit_m_spicy_", "edit_m_tags_",
+                "edit_m_manual_", "edit_d_size_", "edit_d_sugar_",
+                "edit_d_ice_", "edit_d_tags_", "edit_d_manual_",
+            ):
+                st.session_state.pop(f"{_prefix}{order_id}", None)
+                st.session_state.pop(f"{_prefix}{order_id}_widget", None)
             st.toast("✅ 餐點已成功更新！")
             st.rerun()
 
@@ -1358,7 +1395,10 @@ with tab1:
             if d_display_list: st.caption(f"ℹ️ 即將加入：{html.escape(str(d_display_text))}")
 
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
-                if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
+                if d_size not in ("M(中杯)", "L(大杯)", "XL(特大杯)"):
+                    st.toast("🚫 無法加入：請選擇飲料尺寸！", icon="⚠️")
+                elif d_price_unit == 0:
+                    st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
                     drink_options = [d_size, d_sugar, d_ice]
                     clean_drink_options = [
