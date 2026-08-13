@@ -12,14 +12,14 @@ from datetime import datetime
 DB_FILE = "lunch.db"
 
 # 人員與點餐選項是辦公室固定設定，統一由 Streamlit Secrets 管理。
-# [settings] -> colleagues
-# [options]  -> spicy / ice / sugar / tags / drink_tags
+# [default_settings] -> colleagues
+# [default_options]  -> spicy / ice / sugar / tags / drink_tags
 # 這些固定設定不寫入 SQLite，避免產生兩套不同的設定來源.
 
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.5", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.6", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -124,13 +124,20 @@ def get_settings_from_secrets():
     options = {"spicy": [], "ice": [], "sugar": [], "tags": [], "drink_tags": []}
 
     try:
-        settings = st.secrets.get("settings", {})
+        # 3.9 原本誤用了 [settings]；為相容目前已提供的 Secrets，
+        # 正式使用 [default_settings]，並同時接受舊版 [settings]。
+        settings = st.secrets.get("default_settings", {})
+        if not settings:
+            settings = st.secrets.get("settings", {})
         colleagues = list(settings.get("colleagues", []))
     except Exception:
         pass
 
     try:
-        secret_options = st.secrets.get("options", {})
+        # 正式使用 [default_options]，同時接受舊版 [options]。
+        secret_options = st.secrets.get("default_options", {})
+        if not secret_options:
+            secret_options = st.secrets.get("options", {})
         for key in options:
             options[key] = list(secret_options.get(key, []))
     except Exception:
