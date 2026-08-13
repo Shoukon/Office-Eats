@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.11", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.12", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -380,7 +380,7 @@ def render_stats_section():
             return (
                 "・".join(display_parts),
                 size_order.get(size, 0),
-                spicy_order.get(spicy, 99),
+                spicy_order.get(spicy, 0),
                 0,
                 "・".join(parts),
             )
@@ -406,8 +406,8 @@ def render_stats_section():
             return (
                 "・".join(display_parts),
                 size_order.get(size, 99),
-                sugar_order.get(sugar, 99),
-                ice_order.get(ice, 99),
+                sugar_order.get(sugar, 0),
+                ice_order.get(ice, 0),
                 "・".join(parts),
             )
 
