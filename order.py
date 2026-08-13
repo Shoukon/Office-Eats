@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.8", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.9", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -1131,10 +1131,9 @@ with tab1:
                             datetime.now().strftime('%Y-%m-%d %H:%M'), int(m_price_unit)
                         )
                     ):
-                        # 只清除剛剛送出的主餐設定，不影響尚未送出的飲料設定。
-                        # 尺寸是 st.pills widget 的 key，不能在本輪 widget 建立後直接修改；
-                        # 設定 flag，下一次 rerun 在 widget 建立前重設。
-                        st.session_state["_reset_m_size"] = True
+                        # 新增成功後只清除「客製化」內容。
+                        # 尺寸、辣度都屬於目前點餐介面的選擇，保留使用者剛才的設定，
+                        # 與飲料尺寸/甜度/冰塊的操作方式一致。
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} ×{m_qty}"); st.rerun()
