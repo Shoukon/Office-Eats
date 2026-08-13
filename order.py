@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.12", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.13", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -396,19 +396,55 @@ def render_stats_section():
                 "少冰": 3, "正常冰": 4, "溫": 5, "熱": 6,
             }
 
-            size = parts.pop(0) if parts and parts[0] in size_order else ""
-            sugar = parts.pop(0) if parts and parts[0] in sugar_order else ""
-            ice = parts.pop(0) if parts and parts[0] in ice_order else ""
+            # 飲料儲存格式是：
+            # 尺寸/甜度/冰塊[, 其他客製]
+            # 例如：L(大杯)/微糖/微冰
+            #       XL(特大杯)/無糖/去冰, 加珍珠
+            #
+            # 3.9.8 錯誤地只用逗號切割，導致整個
+            # 「L(大杯)/微糖/微冰」被當成一個未知欄位，
+            # 因而尺寸權重全部失效。這裡按照實際資料格式解析。
+            base_part, separator, tag_part = raw.partition(",")
+            base_values = [
+                value.strip()
+                for value in base_part.split("/")
+                if value is not None and value.strip()
+            ]
 
-            display_parts = [x for x in (size, sugar, ice) if x]
-            display_parts.extend(parts)
+            size = base_values[0] if base_values and base_values[0] in size_order else ""
+            sugar = base_values[1] if len(base_values) > 1 and base_values[1] in sugar_order else ""
+            ice = base_values[2] if len(base_values) > 2 and base_values[2] in ice_order else ""
+
+            # 只有被辨識為標準飲料設定的部分才從顯示中拆開。
+            recognized_count = 0
+            if size:
+                recognized_count += 1
+            if sugar:
+                recognized_count += 1
+            if ice:
+                recognized_count += 1
+
+            if recognized_count:
+                extra_parts = [
+                    value.strip()
+                    for value in tag_part.split(",")
+                    if value is not None and value.strip()
+                ] if separator else []
+            else:
+                # 保守處理非標準舊資料，避免誤拆。
+                extra_parts = parts
+
+            # 與主餐統一：所有基本設定與客製項目都用「・」分隔。
+            # 例如：L(大杯)・微糖・微冰・加珍珠
+            display_parts = [value for value in (size, sugar, ice) if value]
+            display_parts.extend(extra_parts)
 
             return (
                 "・".join(display_parts),
                 size_order.get(size, 99),
                 sugar_order.get(sugar, 0),
                 ice_order.get(ice, 0),
-                "・".join(parts),
+                "・".join(extra_parts),
             )
 
         return raw, 99, 99, 99, raw
