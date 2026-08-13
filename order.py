@@ -11,6 +11,12 @@ from datetime import datetime
 # ==========================================
 DB_FILE = "lunch.db"
 
+# orders 固定欄位。統計與收款頁會用這份欄位定義做防禦性處理。
+ORDER_COLUMNS = [
+    "id", "name", "category", "item_name", "price",
+    "custom", "quantity", "order_time", "is_paid", "unit_price"
+]
+
 # 人員與點餐選項是辦公室固定設定，統一由 Streamlit Secrets 管理。
 # [default_settings] -> colleagues
 # [default_options]  -> spicy / ice / sugar / tags / drink_tags
@@ -19,7 +25,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.6", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.7", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -232,6 +238,22 @@ def get_db(query, params=()):
         except Exception: break
     return pd.DataFrame()
 
+def get_orders_df():
+    """安全讀取 orders；失敗/無資料時仍保留固定欄位。"""
+    df = get_db("SELECT * FROM orders")
+    if df.empty:
+        return pd.DataFrame(columns=ORDER_COLUMNS)
+
+    for column in ORDER_COLUMNS:
+        if column not in df.columns:
+            if column in ("price", "quantity", "is_paid", "unit_price"):
+                df[column] = 0
+            else:
+                df[column] = ""
+
+    return df[ORDER_COLUMNS].copy()
+
+
 def get_shop_name(cat):
     df = get_db("SELECT shop_name FROM config_shop WHERE category = ?", (cat,))
     if not df.empty: return df.iloc[0]['shop_name']
@@ -309,14 +331,36 @@ def render_stats_section():
 
     r_name = get_shop_name("main")
     d_name = get_shop_name("drink")
-    df_all = get_db("SELECT * FROM orders")
+    df_all = get_orders_df()
     if df_all.empty: st.info("📦 目前尚無訂單，等待第一筆資料..."); return
 
     def show_stats_optimized(df_source, title, icon_class):
-        total_qty = df_source['quantity'].sum() if not df_source.empty else 0
-        st.markdown(f'<div class="section-header {icon_class}"><div>{title}</div><div>共 {total_qty} 份</div></div>', unsafe_allow_html=True)
-        if df_source.empty: st.caption("無資料"); return
-        
+        # 獨立副本，避免統計區塊互相修改 DataFrame。
+        df_source = df_source.copy()
+
+        if df_source.empty:
+            st.markdown(
+                f'<div class="section-header {icon_class}">'
+                f'<div>{title}</div><div>共 0 份</div></div>',
+                unsafe_allow_html=True
+            )
+            st.caption("無資料")
+            return
+
+        df_source["quantity"] = pd.to_numeric(
+            df_source["quantity"], errors="coerce"
+        ).fillna(0).astype(int)
+        df_source["price"] = pd.to_numeric(
+            df_source["price"], errors="coerce"
+        ).fillna(0).astype(int)
+
+        total_qty = int(df_source["quantity"].sum())
+        st.markdown(
+            f'<div class="section-header {icon_class}">'
+            f'<div>{title}</div><div>共 {total_qty} 份</div></div>',
+            unsafe_allow_html=True
+        )
+
         df_source['item_name'] = (
             df_source['item_name']
             .fillna("")
@@ -422,14 +466,15 @@ def render_payment_section():
     with c_ref_btn:
         if st.button("🔄", help="手動刷新", use_container_width=True, key="btn_refresh_payment"): st.rerun()
 
-    df_all = get_db("SELECT * FROM orders")
+    df_all = get_orders_df()
     if df_all.empty: st.write("尚無訂單。"); return
     
     main_shop = get_shop_name("main")
     drink_shop = get_shop_name("drink")
     
-    df_main = df_all[df_all['category'] == '主餐']
-    df_drink = df_all[df_all['category'] == '飲料']
+    df_all["price"] = pd.to_numeric(df_all["price"], errors="coerce").fillna(0).astype(int)
+    df_main = df_all[df_all['category'] == '主餐'].copy()
+    df_drink = df_all[df_all['category'] == '飲料'].copy()
     
     c_main_prog, c_drink_prog = st.columns(2)
     
@@ -986,6 +1031,11 @@ with tab1:
             cp, cq = st.columns(2)
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
+            # Streamlit widget 的 key 必須在 widget 建立前修改。
+            # 若上一輪要求重設尺寸，本輪先重設，再建立 st.pills。
+            if st.session_state.pop("_reset_m_size", False):
+                st.session_state["m_size"] = "無"
+
             # 主餐尺寸固定為「無 / 小份 / 大份」；「無」為預設且不寫入 custom。
             if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
                 st.session_state["m_size"] = "無"
@@ -1037,7 +1087,7 @@ with tab1:
                     custom_dialog("m_custom", custom_tags_main)
             with c_cust_clear:
                 if st.button("❌", help="清空主餐客製", use_container_width=True, key="clr_m_custom"):
-                    st.session_state["m_size"] = "無"
+                    st.session_state["_reset_m_size"] = True
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
                     st.rerun()
@@ -1078,7 +1128,9 @@ with tab1:
                         )
                     ):
                         # 只清除剛剛送出的主餐設定，不影響尚未送出的飲料設定。
-                        st.session_state["m_size"] = "無"
+                        # 尺寸是 st.pills widget 的 key，不能在本輪 widget 建立後直接修改；
+                        # 設定 flag，下一次 rerun 在 widget 建立前重設。
+                        st.session_state["_reset_m_size"] = True
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{m_name} ×{m_qty}"); st.rerun()
