@@ -19,7 +19,7 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.2", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.3", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -310,30 +310,69 @@ def render_stats_section():
         st.markdown(f'<div class="section-header {icon_class}"><div>{title}</div><div>共 {total_qty} 份</div></div>', unsafe_allow_html=True)
         if df_source.empty: st.caption("無資料"); return
         
-        df_source['item_name'] = df_source['item_name'].astype(str).str.strip()
-        df_source['custom'] = df_source['custom'].astype(str).str.strip()
-        
+        df_source['item_name'] = (
+            df_source['item_name']
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        df_source['custom'] = (
+            df_source['custom']
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
         c_sum, c_det = st.columns([1, 1.2])
-        
+
         with c_sum:
             st.markdown("**📦 彙總表 (店家用)**")
-            summary = df_source.groupby(['item_name', 'custom'])['quantity'].sum().reset_index()
-            summary.columns = ['餐點', '客製', '總量']
-            
-            for idx, row in summary.iterrows():
+
+            # 第一層只依餐點名稱彙總。
+            # custom 是餐點附加資訊，不應讓同一道餐點被拆成多筆主項目。
+            summary = (
+                df_source.groupby('item_name', dropna=False)['quantity']
+                .sum()
+                .reset_index()
+            )
+            summary.columns = ['餐點', '總量']
+
+            for _, row in summary.iterrows():
+                item_name = row["餐點"]
+                item_group = df_source[df_source["item_name"] == item_name]
+
                 with st.container():
                     c_qty, c_info = st.columns([1, 5], vertical_alignment="center")
-                    with c_qty: 
-                        # 數量大小微調至 1.5rem
-                        st.markdown(f'<div style="font-size:1.5rem; font-weight:800; color:#FF4B4B; text-align:left;">×{row["總量"]}</div>', unsafe_allow_html=True)
+                    with c_qty:
+                        st.markdown(
+                            f'<div style="font-size:1.5rem; font-weight:800; color:#FF4B4B; text-align:left;">×{row["總量"]}</div>',
+                            unsafe_allow_html=True
+                        )
+
                     with c_info:
-                        safe_name = html.escape(str(row["餐點"]))
-                        st.markdown(f'<div style="font-size:1.15rem; font-weight:700; color:var(--text-color);">{safe_name}</div>', unsafe_allow_html=True)
-                        if row['客製']: 
-                            safe_custom = html.escape(str(row['客製']))
-                            st.markdown(f'<div class="custom-text">{safe_custom}</div>', unsafe_allow_html=True)
+                        safe_name = html.escape(str(item_name))
+                        st.markdown(
+                            f'<div style="font-size:1.15rem; font-weight:700; color:var(--text-color);">{safe_name}</div>',
+                            unsafe_allow_html=True
+                        )
+
+                        # 同一餐點底下，再依客製化統計，讓店家知道各種客製要做幾份。
+                        custom_group = (
+                            item_group[item_group["custom"] != ""]
+                            .groupby("custom", dropna=False)["quantity"]
+                            .sum()
+                            .reset_index()
+                        )
+
+                        for _, custom_row in custom_group.iterrows():
+                            safe_custom = html.escape(str(custom_row["custom"]))
+                            st.markdown(
+                                f'<div class="custom-text">{safe_custom} ×{custom_row["quantity"]}</div>',
+                                unsafe_allow_html=True
+                            )
+
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
-            
+
             st.metric("該區總額", f"${df_source['price'].sum()}")
 
         with c_det:
@@ -488,7 +527,26 @@ def custom_dialog(key_prefix, tag_options):
     st.caption("快速選項 (可複選)")
     current_tags = st.session_state.get(f"{key_prefix}_tags", [])
     current_manual = st.session_state.get(f"{key_prefix}_manual", "")
-    new_tags = st.pills("客製選項", tag_options, default=current_tags, selection_mode="multi", label_visibility="collapsed", key=f"{key_prefix}_pills_widget")
+
+    valid_tag_set = {str(value) for value in tag_options}
+    current_tags = [
+        str(value) for value in current_tags
+        if value is not None and str(value) in valid_tag_set
+    ]
+
+    if tag_options:
+        new_tags = st.pills(
+            "客製選項",
+            tag_options,
+            default=current_tags,
+            selection_mode="multi",
+            label_visibility="collapsed",
+            key=f"{key_prefix}_pills_widget"
+        )
+    else:
+        new_tags = []
+        st.caption("目前沒有快速客製選項")
+
     st.markdown("---")
     new_manual = st.text_input("或是手動輸入", value=current_manual, placeholder="如：不要XXX...或是加XXX...", key=f"{key_prefix}_manual_widget").strip()
     if st.button("✅ 完成", use_container_width=True, type="primary"):
@@ -644,8 +702,19 @@ with tab1:
             cp, cq = st.columns(2)
             m_price_unit = cp.number_input("單價", min_value=0, step=5, format="%d", key="m_price")
             m_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="m_qty")
-            m_spicy = st.pills("辣度", spicy_levels, default=spicy_levels[0], key="m_spicy", selection_mode="single")
-            
+            # Secrets 修改選項後，舊的 session_state 可能還保留已不存在的選項。
+            # 例如原本選「無」，後來從 Secrets 移除「無」，st.pills 可能回傳 None。
+            if spicy_levels:
+                if st.session_state.get("m_spicy") not in spicy_levels:
+                    st.session_state["m_spicy"] = spicy_levels[0]
+                m_spicy = st.pills(
+                    "辣度", spicy_levels, default=spicy_levels[0],
+                    key="m_spicy", selection_mode="single"
+                )
+            else:
+                m_spicy = None
+                st.caption("辣度：目前沒有可選項目")
+
             current_tags = st.session_state.get("m_custom_tags", [])
             current_manual = st.session_state.get("m_custom_manual", "")
             display_list = current_tags.copy()
@@ -671,8 +740,19 @@ with tab1:
                 if m_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
                     parts = []
-                    if m_spicy != "無": parts.append(m_spicy)
-                    if display_list: parts.append(", ".join(display_list))
+
+                    # m_spicy 可能因 Secrets 修改而暫時為 None；只有有效文字才加入。
+                    if m_spicy and str(m_spicy).strip() != "無":
+                        parts.append(str(m_spicy).strip())
+
+                    clean_display_list = [
+                        str(value).strip()
+                        for value in display_list
+                        if value is not None and str(value).strip()
+                    ]
+                    if clean_display_list:
+                        parts.append(", ".join(clean_display_list))
+
                     cust = ", ".join(parts) if parts else ""
                     
                     total_p = int(m_price_unit) * int(m_qty)
@@ -710,6 +790,8 @@ with tab1:
             )
 
             if sugar_levels:
+                if st.session_state.get("d_sugar") not in sugar_levels:
+                    st.session_state["d_sugar"] = sugar_levels[0]
                 d_sugar = st.pills(
                     "甜度", sugar_levels, default=sugar_levels[0],
                     key="d_sugar", selection_mode="single"
@@ -719,6 +801,8 @@ with tab1:
                 st.caption("甜度：目前沒有可選項目")
 
             if ice_levels:
+                if st.session_state.get("d_ice") not in ice_levels:
+                    st.session_state["d_ice"] = ice_levels[0]
                 d_ice = st.pills(
                     "冰塊", ice_levels, default=ice_levels[0],
                     key="d_ice", selection_mode="single"
@@ -752,10 +836,22 @@ with tab1:
                 if d_price_unit == 0: st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
                     drink_options = [d_size, d_sugar, d_ice]
-                    base_config = "/".join(str(value) for value in drink_options if value)
+                    clean_drink_options = [
+                        str(value).strip()
+                        for value in drink_options
+                        if value is not None and str(value).strip()
+                    ]
+                    base_config = "/".join(clean_drink_options)
+
+                    clean_drink_tags = [
+                        str(value).strip()
+                        for value in d_display_list
+                        if value is not None and str(value).strip()
+                    ]
+
                     final_cust = base_config
-                    if d_display_list:
-                        final_cust += f"{', ' if final_cust else ''}{', '.join(d_display_list)}"
+                    if clean_drink_tags:
+                        final_cust += f"{', ' if final_cust else ''}{', '.join(clean_drink_tags)}"
 
                     total_p = int(d_price_unit) * int(d_qty)
                     if execute_db(
