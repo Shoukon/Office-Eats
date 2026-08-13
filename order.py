@@ -19,14 +19,48 @@ DB_FILE = "lunch.db"
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.3.1", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.3.2", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
-    /* 辦公室 Windows 11 繁中環境：中文、英文、數字統一優先使用微軟正黑體 */
+    /*
+     * 辦公室 Windows 11 繁中環境：
+     * 中文、英文、數字統一優先使用微軟正黑體。
+     *
+     * Emoji 不應被強制綁到微軟正黑體：
+     * Windows 會自動 fallback 到 Segoe UI Emoji。
+     *
+     * Streamlit 的 Material Symbols 圖示更不能跟著這個規則，
+     * 否則例如 expander 的 expand_more 會被當成普通文字顯示。
+     */
     html, body, button, input, textarea, select,
-    [data-baseweb], [class*="st-"] {
-        font-family: "Microsoft JhengHei", "微軟正黑體", sans-serif !important;
+    [data-baseweb], [class*="st-"]:not([data-testid="stIconMaterial"]) {
+        font-family:
+            "Microsoft JhengHei",
+            "微軟正黑體",
+            "Segoe UI Emoji",
+            "Noto Color Emoji",
+            "Apple Color Emoji",
+            sans-serif !important;
+    }
+
+    /* Streamlit Material Symbols：保留原生圖示字型，避免出現 expand_more / arrow_down 等文字 */
+    [data-testid="stIconMaterial"],
+    .material-symbols-rounded,
+    .material-symbols-outlined {
+        font-family: "Material Symbols Rounded" !important;
+        font-weight: normal !important;
+        font-style: normal !important;
+        font-size: inherit;
+        line-height: 1;
+        letter-spacing: normal;
+        text-transform: none;
+        white-space: nowrap;
+        word-wrap: normal;
+        direction: ltr;
+        -webkit-font-feature-settings: "liga";
+        -webkit-font-smoothing: antialiased;
+        font-feature-settings: "liga";
     }
 
     #MainMenu {visibility: hidden;}
