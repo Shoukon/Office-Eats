@@ -901,8 +901,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             st.session_state[size_key] = main_size if main_size in MAIN_SIZE_OPTIONS else "無"
         if spicy_key not in st.session_state:
             st.session_state[spicy_key] = main_spicy if main_spicy in spicy_levels else (spicy_levels[0] if spicy_levels else None)
-        if tags_key not in st.session_state:
-            st.session_state[tags_key] = main_tags
         if manual_key not in st.session_state:
             st.session_state[manual_key] = main_manual
 
@@ -1081,8 +1079,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             else:
                 manual_parts.append(part)
 
-        if drink_tags_key not in st.session_state:
-            st.session_state[drink_tags_key] = parsed_tags
         if drink_manual_key not in st.session_state:
             st.session_state[drink_manual_key] = ", ".join(manual_parts)
 
@@ -1130,7 +1126,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         # 儲存時直接從目前 widget 的 session state 取得最新值，
         # 避免 Dialog rerun 後使用上一輪的區域變數造成「按下儲存但內容沒更新」。
         if edit_category == "主餐":
-            save_tags = list(st.session_state.get(f"edit_m_tags_widget_{order_id}", []))
+            save_tags = list(edit_tags or [])
             save_manual = str(
                 st.session_state.get(f"{manual_key}_widget", edit_manual)
             ).strip()
@@ -1150,7 +1146,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                 save_parts.append(save_manual)
             save_custom = ", ".join(save_parts) if save_parts else ""
         else:
-            save_tags = list(st.session_state.get(f"edit_d_tags_widget_{order_id}", []))
+            save_tags = list(edit_drink_tags or [])
             save_manual = str(
                 st.session_state.get(f"{drink_manual_key}_widget", edit_drink_manual)
             ).strip()
