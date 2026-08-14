@@ -1122,13 +1122,14 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         if edit_drink_manual:
             new_custom += f"{', ' if new_custom else ''}{edit_drink_manual}"
 
-    if st.button("💾 儲存修改", type="primary", use_container_width=True):
-        # 儲存時直接從目前 widget 的 session state 取得最新值，
-        # 避免 Dialog rerun 後使用上一輪的區域變數造成「按下儲存但內容沒更新」。
+    def save_edit_order():
+        # 由 button callback 在同一次 widget event 中執行。
+        # 這樣「選擇客製 → 儲存」不需要依賴下一次 rerun 才同步狀態，
+        # 可避免 Dialog 從 fragment 開啟時的 stale widget state。
         if edit_category == "主餐":
             save_tags = list(edit_tags or [])
             save_manual = str(
-                st.session_state.get(f"{manual_key}_widget", edit_manual)
+                st.session_state.get(f"{manual_key}_widget", "")
             ).strip()
 
             save_parts = []
@@ -1136,6 +1137,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                 save_parts.append(str(edit_size).strip())
             if edit_spicy and str(edit_spicy).strip() != "無":
                 save_parts.append(str(edit_spicy).strip())
+
             save_tags = [
                 str(v).strip() for v in save_tags
                 if v is not None and str(v).strip()
@@ -1148,7 +1150,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         else:
             save_tags = list(edit_drink_tags or [])
             save_manual = str(
-                st.session_state.get(f"{drink_manual_key}_widget", edit_drink_manual)
+                st.session_state.get(f"{drink_manual_key}_widget", "")
             ).strip()
 
             save_options = [
@@ -1166,11 +1168,14 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             if save_manual:
                 save_custom += f"{', ' if save_custom else ''}{save_manual}"
 
-        # 儲存前再查一次，並由 SQL 本身限制只能修改未付款訂單。
-        current_check = get_db("SELECT is_paid FROM orders WHERE id = ?", (order_id,))
+        current_check = get_db(
+            "SELECT is_paid FROM orders WHERE id = ?",
+            (order_id,)
+        )
         if current_check.empty:
             st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
             return
+
         if int(current_check.iloc[0]["is_paid"] or 0) == 1:
             st.error("🔒 這筆訂單已完成收款，無法修改。")
             return
@@ -1187,11 +1192,17 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         affected = execute_db(
             "UPDATE orders SET item_name=?, price=?, quantity=?, unit_price=?, custom=? "
             "WHERE id=? AND is_paid=0",
-            (new_name, new_total, int(new_qty), int(new_unit_price), save_custom, order_id)
+            (
+                new_name,
+                new_total,
+                int(new_qty),
+                int(new_unit_price),
+                save_custom,
+                order_id
+            )
         )
 
         if affected == 1:
-            # 清除本筆編輯狀態，避免下次重新開啟同一筆訂單時沿用舊 session state。
             for _prefix in (
                 "edit_m_size_", "edit_m_spicy_", "edit_m_tags_",
                 "edit_m_manual_", "edit_d_size_", "edit_d_sugar_",
@@ -1199,14 +1210,26 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             ):
                 st.session_state.pop(f"{_prefix}{order_id}", None)
                 st.session_state.pop(f"{_prefix}{order_id}_widget", None)
+
             st.session_state.pop(f"edit_m_tags_widget_{order_id}", None)
             st.session_state.pop(f"edit_d_tags_widget_{order_id}", None)
+
             st.toast("✅ 餐點已成功更新！")
             st.rerun()
         elif affected == 0:
-            st.error("⚠️ 餐點沒有更新，可能已完成收款或資料已被其他人修改，請重新開啟編輯後再試。")
+            st.error(
+                "⚠️ 餐點沒有更新，可能已完成收款或資料已被其他人修改，"
+                "請重新開啟編輯後再試。"
+            )
         else:
             st.error(f"⚠️ 更新筆數異常（{affected}），請重新整理後確認。")
+
+    st.button(
+        "💾 儲存修改",
+        type="primary",
+        use_container_width=True,
+        on_click=save_edit_order,
+    )
 
 
 @st.fragment(run_every="5s")
