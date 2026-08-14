@@ -938,14 +938,20 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         ]
         st.session_state[tags_key] = current_tags
 
+        tags_widget_key = f"{tags_key}_widget"
+        if tags_widget_key not in st.session_state:
+            st.session_state[tags_widget_key] = current_tags
+
         if custom_tags_main:
             edit_tags = st.pills(
                 "常用客製需求（可複選）",
                 custom_tags_main,
-                default=current_tags,
-                key=f"{tags_key}_widget",
+                key=tags_widget_key,
                 selection_mode="multi"
             )
+            # 將 widget 的最新選擇同步回編輯狀態，
+            # 避免 Dialog rerun 後又被舊的 tags_key 覆蓋。
+            st.session_state[tags_key] = list(edit_tags or [])
         else:
             edit_tags = []
             st.caption("目前沒有可用的常用客製需求")
@@ -1093,14 +1099,20 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         ]
         st.session_state[drink_tags_key] = current_drink_tags
 
+        drink_tags_widget_key = f"{drink_tags_key}_widget"
+        if drink_tags_widget_key not in st.session_state:
+            st.session_state[drink_tags_widget_key] = current_drink_tags
+
         if custom_tags_drink:
             edit_drink_tags = st.pills(
                 "常用客製需求（可複選）",
                 custom_tags_drink,
-                default=current_drink_tags,
-                key=f"{drink_tags_key}_widget",
+                key=drink_tags_widget_key,
                 selection_mode="multi"
             )
+            # 將 widget 的最新選擇同步回編輯狀態，
+            # 避免 Dialog rerun 後又被舊的 drink_tags_key 覆蓋。
+            st.session_state[drink_tags_key] = list(edit_drink_tags or [])
         else:
             edit_drink_tags = []
             st.caption("目前沒有可用的常用客製需求")
