@@ -1122,14 +1122,22 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         if edit_drink_manual:
             new_custom += f"{', ' if new_custom else ''}{edit_drink_manual}"
 
-    def save_edit_order():
-        # 由 button callback 在同一次 widget event 中執行。
-        # 這樣「選擇客製 → 儲存」不需要依賴下一次 rerun 才同步狀態，
-        # 可避免 Dialog 從 fragment 開啟時的 stale widget state。
+    if st.button(
+        "💾 儲存修改",
+        type="primary",
+        use_container_width=True,
+        key=f"save_edit_{order_id}",
+    ):
+        # 直接在 Dialog 的本次執行中儲存。
+        # 不使用 on_click callback，避免 Dialog callback 中觸發 rerun
+        # 造成白畫面；所有 widget 值均取本次執行當下的回傳值。
         if edit_category == "主餐":
-            save_tags = list(edit_tags or [])
+            save_tags = [
+                str(v).strip() for v in (edit_tags or [])
+                if v is not None and str(v).strip()
+            ]
             save_manual = str(
-                st.session_state.get(f"{manual_key}_widget", "")
+                st.session_state.get(f"{manual_key}_widget", edit_manual)
             ).strip()
 
             save_parts = []
@@ -1137,20 +1145,18 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                 save_parts.append(str(edit_size).strip())
             if edit_spicy and str(edit_spicy).strip() != "無":
                 save_parts.append(str(edit_spicy).strip())
-
-            save_tags = [
-                str(v).strip() for v in save_tags
-                if v is not None and str(v).strip()
-            ]
             if save_tags:
                 save_parts.append(", ".join(save_tags))
             if save_manual:
                 save_parts.append(save_manual)
             save_custom = ", ".join(save_parts) if save_parts else ""
         else:
-            save_tags = list(edit_drink_tags or [])
+            save_tags = [
+                str(v).strip() for v in (edit_drink_tags or [])
+                if v is not None and str(v).strip()
+            ]
             save_manual = str(
-                st.session_state.get(f"{drink_manual_key}_widget", "")
+                st.session_state.get(f"{drink_manual_key}_widget", edit_drink_manual)
             ).strip()
 
             save_options = [
@@ -1159,10 +1165,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             ]
             save_custom = "/".join(save_options)
 
-            save_tags = [
-                str(v).strip() for v in save_tags
-                if v is not None and str(v).strip()
-            ]
             if save_tags:
                 save_custom += f"{', ' if save_custom else ''}{', '.join(save_tags)}"
             if save_manual:
@@ -1172,64 +1174,52 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             "SELECT is_paid FROM orders WHERE id = ?",
             (order_id,)
         )
+
         if current_check.empty:
             st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
-            return
-
-        if int(current_check.iloc[0]["is_paid"] or 0) == 1:
+        elif int(current_check.iloc[0]["is_paid"] or 0) == 1:
             st.error("🔒 這筆訂單已完成收款，無法修改。")
-            return
-
-        if edit_category == "主餐" and edit_size not in MAIN_SIZE_OPTIONS:
+        elif edit_category == "主餐" and edit_size not in MAIN_SIZE_OPTIONS:
             st.error("請選擇餐點尺寸")
-            return
-
-        if not new_name:
+        elif not new_name:
             st.error("餐點名稱不能為空")
-            return
-
-        new_total = int(new_unit_price) * int(new_qty)
-        affected = execute_db(
-            "UPDATE orders SET item_name=?, price=?, quantity=?, unit_price=?, custom=? "
-            "WHERE id=? AND is_paid=0",
-            (
-                new_name,
-                new_total,
-                int(new_qty),
-                int(new_unit_price),
-                save_custom,
-                order_id
-            )
-        )
-
-        if affected == 1:
-            for _prefix in (
-                "edit_m_size_", "edit_m_spicy_", "edit_m_tags_",
-                "edit_m_manual_", "edit_d_size_", "edit_d_sugar_",
-                "edit_d_ice_", "edit_d_tags_", "edit_d_manual_",
-            ):
-                st.session_state.pop(f"{_prefix}{order_id}", None)
-                st.session_state.pop(f"{_prefix}{order_id}_widget", None)
-
-            st.session_state.pop(f"edit_m_tags_widget_{order_id}", None)
-            st.session_state.pop(f"edit_d_tags_widget_{order_id}", None)
-
-            st.toast("✅ 餐點已成功更新！")
-            st.rerun()
-        elif affected == 0:
-            st.error(
-                "⚠️ 餐點沒有更新，可能已完成收款或資料已被其他人修改，"
-                "請重新開啟編輯後再試。"
-            )
         else:
-            st.error(f"⚠️ 更新筆數異常（{affected}），請重新整理後確認。")
+            new_total = int(new_unit_price) * int(new_qty)
+            affected = execute_db(
+                "UPDATE orders SET item_name=?, price=?, quantity=?, unit_price=?, custom=? "
+                "WHERE id=? AND is_paid=0",
+                (
+                    new_name,
+                    new_total,
+                    int(new_qty),
+                    int(new_unit_price),
+                    save_custom,
+                    order_id,
+                )
+            )
 
-    st.button(
-        "💾 儲存修改",
-        type="primary",
-        use_container_width=True,
-        on_click=save_edit_order,
-    )
+            if affected == 1:
+                for _prefix in (
+                    "edit_m_size_", "edit_m_spicy_", "edit_m_tags_",
+                    "edit_m_manual_", "edit_d_size_", "edit_d_sugar_",
+                    "edit_d_ice_", "edit_d_tags_", "edit_d_manual_",
+                ):
+                    st.session_state.pop(f"{_prefix}{order_id}", None)
+                    st.session_state.pop(f"{_prefix}{order_id}_widget", None)
+
+                st.session_state.pop(f"edit_m_tags_widget_{order_id}", None)
+                st.session_state.pop(f"edit_d_tags_widget_{order_id}", None)
+
+                st.toast("✅ 餐點已成功更新！")
+                st.rerun()
+            elif affected == 0:
+                st.error(
+                    "⚠️ 餐點沒有更新，可能已完成收款或資料已被其他人修改，"
+                    "請重新開啟編輯後再試。"
+                )
+            else:
+                st.error(f"⚠️ 更新筆數異常（{affected}），請重新整理後確認。")
+
 
 
 @st.fragment(run_every="5s")
