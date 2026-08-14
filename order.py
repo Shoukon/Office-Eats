@@ -735,8 +735,13 @@ def _pay_logic_grouped(cat, df, k):
                 for _, row in group.iterrows():
                     safe_item = html.escape(str(row["item_name"]))
                     safe_cst_html = ""
-                    if row['custom']: 
-                        safe_cst = html.escape(str(row['custom']))
+                    if row['custom']:
+                        # 飲料原本以 "/" 儲存尺寸／甜度／冰塊，
+                        # 收款管理顯示時統一改成 "・"，與主餐及統計看板一致。
+                        raw_cst = str(row['custom'])
+                        if cat == "飲料":
+                            raw_cst = raw_cst.replace("/", "・")
+                        safe_cst = html.escape(raw_cst)
                         safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                         
                     st.markdown(
