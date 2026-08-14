@@ -1163,28 +1163,8 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             st.rerun()
 
 
-if 'user_name' not in st.session_state: st.session_state['user_name'] = None
-if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
-if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'] = ""
-if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = []
-if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
-
-with tab1:
-    if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
-    
-    with st.container():
-        st.markdown('<h5>👤 請選擇您的姓名</h5>', unsafe_allow_html=True)
-        c_user, c_btn = st.columns([3, 1.5], vertical_alignment="center")
-        with c_user:
-            if st.session_state['user_name']: st.info(f"目前使用者：**{html.escape(str(st.session_state['user_name']))}**")
-            else: st.warning("⚠️ 尚未選擇姓名")
-        with c_btn:
-            if st.button("👤 選擇／切換使用者", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
-                login_dialog()
-        if not st.session_state['user_name']: st.stop()
-
-    user_name = st.session_state['user_name']
-
+@st.fragment(run_every="5s")
+def render_my_orders(user_name):
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
     my_sum = my_orders['price'].sum() if not my_orders.empty else 0
     with st.expander(f"📋 {html.escape(str(user_name))} 的訂單（合計：${my_sum}）", expanded=True if not my_orders.empty else False):
@@ -1192,15 +1172,15 @@ with tab1:
         else:
             for _, row in my_orders.iterrows():
                 c_icon, c_info, c_btn1, c_btn2 = st.columns([0.4, 4.5, 0.7, 0.7], vertical_alignment="center")
-                
+
                 c_icon.markdown('<div style="font-size:1.4rem; text-align:center;">' + ("🍱" if row['category'] == '主餐' else "🥤") + '</div>', unsafe_allow_html=True)
-                
+
                 safe_item_name = html.escape(str(row["item_name"]))
                 safe_cst_html = ""
                 if row['custom']:
                     safe_custom = html.escape(str(row['custom']))
                     safe_cst_html = f'<div class="custom-text">{safe_custom}</div>'
-                
+
                 c_info.markdown(
                     f'<div style="display:flex; flex-direction:column; justify-content:center;">'
                     f'  <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">'
@@ -1210,7 +1190,7 @@ with tab1:
                     f'  {safe_cst_html}'
                     f'</div>', unsafe_allow_html=True
                 )
-                
+
                 is_paid = int(row["is_paid"] or 0) == 1
 
                 if c_btn1.button(
@@ -1245,9 +1225,33 @@ with tab1:
                             if execute_db("DELETE FROM orders WHERE id = ? AND is_paid = 0", (row['id'],)):
                                 st.toast("✅ 已刪除")
                                 st.rerun()
-                
+
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
-    st.write("") 
+    st.write("")
+
+if 'user_name' not in st.session_state: st.session_state['user_name'] = None
+if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
+if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'] = ""
+if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = []
+if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
+
+with tab1:
+    if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
+    
+    with st.container():
+        st.markdown('<h5>👤 請選擇您的姓名</h5>', unsafe_allow_html=True)
+        c_user, c_btn = st.columns([3, 1.5], vertical_alignment="center")
+        with c_user:
+            if st.session_state['user_name']: st.info(f"目前使用者：**{html.escape(str(st.session_state['user_name']))}**")
+            else: st.warning("⚠️ 尚未選擇姓名")
+        with c_btn:
+            if st.button("👤 選擇／切換使用者", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
+                login_dialog()
+        if not st.session_state['user_name']: st.stop()
+
+    user_name = st.session_state['user_name']
+
+    render_my_orders(user_name) 
 
     current_main_shop = new_main_shop
     current_drink_shop = new_drink_shop
