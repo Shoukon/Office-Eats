@@ -930,17 +930,13 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             edit_spicy = None
             st.caption("辣度：目前沒有可選項目")
 
-        current_tags = st.session_state.get(tags_key, [])
-        valid_tag_set = {str(v) for v in custom_tags_main}
-        current_tags = [
-            str(v) for v in current_tags
-            if v is not None and str(v) in valid_tag_set
-        ]
-        st.session_state[tags_key] = current_tags
-
-        tags_widget_key = f"{tags_key}_widget"
+        tags_widget_key = f"edit_m_tags_widget_{order_id}"
         if tags_widget_key not in st.session_state:
-            st.session_state[tags_widget_key] = current_tags
+            valid_tag_set = {str(v) for v in custom_tags_main}
+            st.session_state[tags_widget_key] = [
+                str(v) for v in main_tags
+                if v is not None and str(v) in valid_tag_set
+            ]
 
         if custom_tags_main:
             edit_tags = st.pills(
@@ -949,9 +945,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                 key=tags_widget_key,
                 selection_mode="multi"
             )
-            # 將 widget 的最新選擇同步回編輯狀態，
-            # 避免 Dialog rerun 後又被舊的 tags_key 覆蓋。
-            st.session_state[tags_key] = list(edit_tags or [])
         else:
             edit_tags = []
             st.caption("目前沒有可用的常用客製需求")
@@ -1093,15 +1086,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         if drink_manual_key not in st.session_state:
             st.session_state[drink_manual_key] = ", ".join(manual_parts)
 
-        current_drink_tags = [
-            str(v) for v in st.session_state.get(drink_tags_key, [])
-            if v is not None and str(v) in valid_drink_tags
-        ]
-        st.session_state[drink_tags_key] = current_drink_tags
-
-        drink_tags_widget_key = f"{drink_tags_key}_widget"
+        drink_tags_widget_key = f"edit_d_tags_widget_{order_id}"
         if drink_tags_widget_key not in st.session_state:
-            st.session_state[drink_tags_widget_key] = current_drink_tags
+            st.session_state[drink_tags_widget_key] = [
+                str(v) for v in parsed_tags
+                if v is not None and str(v) in valid_drink_tags
+            ]
 
         if custom_tags_drink:
             edit_drink_tags = st.pills(
@@ -1110,9 +1100,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                 key=drink_tags_widget_key,
                 selection_mode="multi"
             )
-            # 將 widget 的最新選擇同步回編輯狀態，
-            # 避免 Dialog rerun 後又被舊的 drink_tags_key 覆蓋。
-            st.session_state[drink_tags_key] = list(edit_drink_tags or [])
         else:
             edit_drink_tags = []
             st.caption("目前沒有可用的常用客製需求")
@@ -1140,6 +1127,49 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             new_custom += f"{', ' if new_custom else ''}{edit_drink_manual}"
 
     if st.button("💾 儲存修改", type="primary", use_container_width=True):
+        # 儲存時直接從目前 widget 的 session state 取得最新值，
+        # 避免 Dialog rerun 後使用上一輪的區域變數造成「按下儲存但內容沒更新」。
+        if edit_category == "主餐":
+            save_tags = list(st.session_state.get(f"edit_m_tags_widget_{order_id}", []))
+            save_manual = str(
+                st.session_state.get(f"{manual_key}_widget", edit_manual)
+            ).strip()
+
+            save_parts = []
+            if edit_size and str(edit_size).strip() != "無":
+                save_parts.append(str(edit_size).strip())
+            if edit_spicy and str(edit_spicy).strip() != "無":
+                save_parts.append(str(edit_spicy).strip())
+            save_tags = [
+                str(v).strip() for v in save_tags
+                if v is not None and str(v).strip()
+            ]
+            if save_tags:
+                save_parts.append(", ".join(save_tags))
+            if save_manual:
+                save_parts.append(save_manual)
+            save_custom = ", ".join(save_parts) if save_parts else ""
+        else:
+            save_tags = list(st.session_state.get(f"edit_d_tags_widget_{order_id}", []))
+            save_manual = str(
+                st.session_state.get(f"{drink_manual_key}_widget", edit_drink_manual)
+            ).strip()
+
+            save_options = [
+                str(v).strip() for v in [edit_size, edit_sugar, edit_ice]
+                if v is not None and str(v).strip()
+            ]
+            save_custom = "/".join(save_options)
+
+            save_tags = [
+                str(v).strip() for v in save_tags
+                if v is not None and str(v).strip()
+            ]
+            if save_tags:
+                save_custom += f"{', ' if save_custom else ''}{', '.join(save_tags)}"
+            if save_manual:
+                save_custom += f"{', ' if save_custom else ''}{save_manual}"
+
         # 儲存前再查一次，並由 SQL 本身限制只能修改未付款訂單。
         current_check = get_db("SELECT is_paid FROM orders WHERE id = ?", (order_id,))
         if current_check.empty:
@@ -1158,11 +1188,13 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             return
 
         new_total = int(new_unit_price) * int(new_qty)
-        if execute_db(
+        affected = execute_db(
             "UPDATE orders SET item_name=?, price=?, quantity=?, unit_price=?, custom=? "
             "WHERE id=? AND is_paid=0",
-            (new_name, new_total, int(new_qty), int(new_unit_price), new_custom, order_id)
-        ):
+            (new_name, new_total, int(new_qty), int(new_unit_price), save_custom, order_id)
+        )
+
+        if affected == 1:
             # 清除本筆編輯狀態，避免下次重新開啟同一筆訂單時沿用舊 session state。
             for _prefix in (
                 "edit_m_size_", "edit_m_spicy_", "edit_m_tags_",
@@ -1171,8 +1203,14 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             ):
                 st.session_state.pop(f"{_prefix}{order_id}", None)
                 st.session_state.pop(f"{_prefix}{order_id}_widget", None)
+            st.session_state.pop(f"edit_m_tags_widget_{order_id}", None)
+            st.session_state.pop(f"edit_d_tags_widget_{order_id}", None)
             st.toast("✅ 餐點已成功更新！")
             st.rerun()
+        elif affected == 0:
+            st.error("⚠️ 餐點沒有更新，可能已完成收款或資料已被其他人修改，請重新開啟編輯後再試。")
+        else:
+            st.error(f"⚠️ 更新筆數異常（{affected}），請重新整理後確認。")
 
 
 @st.fragment(run_every="5s")
