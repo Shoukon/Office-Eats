@@ -1259,14 +1259,18 @@ def render_my_orders(user_name):
                     use_container_width=True,
                     disabled=is_paid
                 ):
-                    edit_order_dialog(
-                        row['id'],
-                        row['category'],
-                        row['item_name'],
-                        row['price'],
-                        row['quantity'],
-                        row['custom']
-                    )
+                    # 不在 5 秒 fragment 內直接開 Dialog。
+                    # 先記住要編輯的訂單，再做一次完整 app rerun，
+                    # 由主流程開啟 Dialog，避免 fragment 自動刷新與 Dialog 狀態互相干擾。
+                    st.session_state["_edit_order_request"] = {
+                        "id": int(row["id"]),
+                        "category": row["category"],
+                        "item_name": row["item_name"],
+                        "price": row["price"],
+                        "quantity": row["quantity"],
+                        "custom": row["custom"],
+                    }
+                    st.rerun()
 
                 if is_paid:
                     c_btn2.button(
@@ -1310,7 +1314,21 @@ with tab1:
 
     user_name = st.session_state['user_name']
 
-    render_my_orders(user_name) 
+    render_my_orders(user_name)
+
+    # 編輯 Dialog 必須由主 App 流程開啟，而不是從 5 秒 fragment 內直接開啟。
+    # 這樣 fragment 的週期性 rerun 不會干擾 Dialog 的 widget/session state。
+    edit_request = st.session_state.get("_edit_order_request")
+    if edit_request:
+        st.session_state.pop("_edit_order_request", None)
+        edit_order_dialog(
+            edit_request["id"],
+            edit_request["category"],
+            edit_request["item_name"],
+            edit_request["price"],
+            edit_request["quantity"],
+            edit_request["custom"],
+        )
 
     current_main_shop = new_main_shop
     current_drink_shop = new_drink_shop
