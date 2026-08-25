@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.5", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.5.1", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -610,10 +610,22 @@ def render_stats_section():
                             )
                         )
 
+                        custom_qty = 0
                         for _, custom_row in custom_group.iterrows():
+                            qty = int(custom_row["quantity"])
+                            custom_qty += qty
                             safe_custom = html.escape(str(custom_row["stats_custom"]))
                             st.markdown(
-                                f'<div class="custom-text">{safe_custom} ×{custom_row["quantity"]}</div>',
+                                f'<div class="custom-text">{safe_custom} ×{qty}</div>',
+                                unsafe_allow_html=True
+                            )
+
+                        # 若部分訂單沒有任何客製需求，補上「無客製」，
+                        # 讓明細數量可以完整對應左側的餐點總數。
+                        no_custom_qty = int(row["總量"]) - custom_qty
+                        if no_custom_qty > 0:
+                            st.markdown(
+                                f'<div class="custom-text">無客製 ×{no_custom_qty}</div>',
                                 unsafe_allow_html=True
                             )
 
