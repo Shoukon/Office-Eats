@@ -25,7 +25,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.5.1", page_icon="🍱", layout="wide")
+st.set_page_config(page_title="點餐哦各位～ v3.5.2", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -623,7 +623,10 @@ def render_stats_section():
                         # 若部分訂單沒有任何客製需求，補上「無客製」，
                         # 讓明細數量可以完整對應左側的餐點總數。
                         no_custom_qty = int(row["總量"]) - custom_qty
-                        if no_custom_qty > 0:
+                        # 只有「部分有客製、部分無客製」時才補顯示「無客製」。
+                        # 如果全部都無客製，整個餐點沒有其他客製明細，
+                        # 就不需要再顯示「無客製 ×總數」。
+                        if custom_qty > 0 and no_custom_qty > 0:
                             st.markdown(
                                 f'<div class="custom-text">無客製 ×{no_custom_qty}</div>',
                                 unsafe_allow_html=True
