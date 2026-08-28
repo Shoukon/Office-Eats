@@ -32,7 +32,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.4"
+VERSION = "v3.6.5"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -563,6 +563,23 @@ def manage_options_dialog():
             set_options(cat,text.splitlines()); save_and_sync(); st.toast(f"✅ {label}已更新"); st.rerun()
     if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True): st.rerun()
 
+@st.dialog("⚠️ 確認清空全部訂單")
+def clear_orders_dialog():
+    st.warning("確定要清空目前全部訂單嗎？此動作無法復原。")
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("❌ 取消",key="clear_orders_cancel",use_container_width=True):
+            st.rerun()
+    with c2:
+        if st.button("🗑️ 確定清除",key="clear_orders_confirm",use_container_width=True):
+            execute_db("DELETE FROM orders")
+            if sync_github_backup(False):
+                st.toast("🗑️ 全部訂單已清除，GitHub 備份也已更新。")
+            else:
+                st.toast("🗑️ 全部訂單已清除。")
+            st.rerun()
+
+
 with st.sidebar:
     st.header("⚙️ 點餐管理")
     st.subheader("1. 今日店家")
@@ -661,23 +678,8 @@ with st.sidebar:
 
         st.divider(); st.subheader("🗑️ 資料管理")
         if st.button("🗑️ 清空全部訂單",use_container_width=True):
-            st.session_state["confirm_clear_orders"] = True
-        if st.session_state.get("confirm_clear_orders", False):
-            st.warning("⚠️ 確定清空全部訂單？此動作無法復原。")
-            c1,c2=st.columns(2)
-            with c1:
-                if st.button("✅ 確定清除",key="confirm_clear_orders_yes",use_container_width=True):
-                    execute_db("DELETE FROM orders")
-                    st.session_state["confirm_clear_orders"] = False
-                    if sync_github_backup(False):
-                        st.toast("🗑️ 全部訂單已清除，GitHub 備份也已更新。")
-                    else:
-                        st.toast("🗑️ 全部訂單已清除。")
-                    st.rerun()
-            with c2:
-                if st.button("❌ 取消",key="confirm_clear_orders_no",use_container_width=True):
-                    st.session_state["confirm_clear_orders"] = False
-                    st.rerun()
+            clear_orders_dialog()
+
 
 # ==========================================
 # 4. 統計看板 (全域去框線版本，移除編號)
