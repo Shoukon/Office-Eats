@@ -330,17 +330,6 @@ def set_options(category,values,default_value=None):
         conn.close()
 
 
-def set_options(category,values):
-    values=clean_list(values)
-    conn=db_connect()
-    try:
-        conn.execute("DELETE FROM order_options WHERE category=?",(category,))
-        for idx,v in enumerate(values):
-            conn.execute("INSERT INTO order_options(category,option_value,sort_order) VALUES(?,?,?)",(category,v,idx))
-        conn.commit()
-    finally: conn.close()
-
-
 def get_orders_df():
     df=get_db("SELECT * FROM orders")
     if df.empty: return pd.DataFrame(columns=ORDER_COLUMNS)
@@ -390,8 +379,11 @@ def export_order_data():
     with db_connect() as conn:
         conn.row_factory=sqlite3.Row
         data["members"]=[dict(r) for r in conn.execute("SELECT id,name,sort_order FROM order_members ORDER BY sort_order,id")]
-        for r in conn.execute("SELECT category,option_value,sort_order FROM order_options ORDER BY category,sort_order,id"):
-            data["options"].setdefault(r["category"],[]).append(r["option_value"])
+        for r in conn.execute("SELECT category,option_value,sort_order,is_default FROM order_options ORDER BY category,sort_order,id"):
+            data["options"].setdefault(r["category"],[]).append({
+                "value": r["option_value"],
+                "is_default": int(r["is_default"] or 0)
+            })
         data["config_shop"]=[dict(r) for r in conn.execute("SELECT category,shop_name FROM config_shop ORDER BY category")]
         data["orders"]=[dict(r) for r in conn.execute("SELECT id,name,category,item_name,price,custom,quantity,order_time,is_paid,unit_price FROM orders ORDER BY id")]
     return data
@@ -411,8 +403,18 @@ def import_order_data(data):
             if name: cur.execute("INSERT INTO order_members(name,sort_order) VALUES(?,?)",(name,int(m.get("sort_order",idx))))
         for cat,vals in data.get("options",{}).items():
             if isinstance(vals,list):
-                for idx,v in enumerate(clean_list(vals)):
-                    cur.execute("INSERT INTO order_options(category,option_value,sort_order) VALUES(?,?,?)",(cat,v,idx))
+                for idx,v in enumerate(vals):
+                    if isinstance(v,dict):
+                        value=str(v.get("value","")).strip()
+                        is_default=int(v.get("is_default",0) or 0)
+                    else:
+                        value=str(v).strip()
+                        is_default=0
+                    if value and not (cat=="spicy" and value=="無"):
+                        cur.execute(
+                            "INSERT INTO order_options(category,option_value,sort_order,is_default) VALUES(?,?,?,?)",
+                            (cat,value,idx,is_default)
+                        )
         for s in data.get("config_shop",[]):
             if s.get("category") and s.get("shop_name"):
                 cur.execute("INSERT INTO config_shop(category,shop_name) VALUES(?,?)",(str(s["category"]),str(s["shop_name"])))
@@ -501,6 +503,25 @@ def init_db():
 
 
 is_new_db=init_db()
+
+def ensure_single_select_defaults():
+    categories_defaults={
+        "main_size":["無","小份","大份"],
+        "drink_size":["M","L","XL"],
+    }
+    for cat,values in categories_defaults.items():
+        if not get_options(cat):
+            set_options(cat,values,values[0] if cat=="main_size" else "L")
+    for cat in ("spicy","ice","sugar"):
+        vals=get_options(cat)
+        if vals:
+            # If no row is marked default, first row becomes the default.
+            if get_default_option(cat) != vals[0] and get_db(
+                "SELECT 1 FROM order_options WHERE category=? AND is_default=1",(cat,)
+            ).empty:
+                set_options(cat,vals,vals[0])
+
+ensure_single_select_defaults()
 restored_from_github=restore_from_github_if_new_db(is_new_db)
 if not restored_from_github:
     migrated=seed_legacy_secrets_once()
@@ -594,24 +615,49 @@ def manage_members_dialog():
 def manage_options_dialog():
     st.caption("主餐與飲料客製選項儲存在 lunch.db，Secrets 不再保存這些固定選項。")
     labels={"spicy":"主餐辣度","ice":"飲料冰塊","sugar":"飲料甜度","tags":"主餐客製","drink_tags":"飲料客製"}
+    labels={
+        "main_size":"主餐尺寸",
+        "spicy":"主餐辣度",
+        "drink_size":"飲料尺寸",
+        "ice":"飲料冰塊",
+        "sugar":"飲料甜度",
+        "tags":"主餐客製需求",
+        "drink_tags":"飲料客製需求",
+    }
+    default_categories={"main_size","spicy","drink_size","ice","sugar"}
     for cat,label in labels.items():
         editor_values=get_options(cat)
-        if cat == "spicy":
-            editor_values=[v for v in editor_values if str(v).strip()!="無"]
-        default_value=get_default_option(cat)
-        text=st.text_area(label,value="\n".join(editor_values),height=110,key=f"admin_opt_{cat}",
-                          help="一行一個選項；可調整順序；空白行忽略，重複值自動去除。")
-        default_choice=st.selectbox("預設值",editor_values,
-                                    index=(editor_values.index(default_value)
-                                           if default_value in editor_values else 0),
-                                    key=f"admin_default_{cat}") if editor_values else None
+        default_value=get_default_option(cat) if cat in default_categories else None
+        text=st.text_area(
+            label,
+            value="\n".join(editor_values),
+            height=110,
+            key=f"admin_opt_{cat}",
+            help="一行一個選項；可調整順序；空白行忽略，重複值自動去除。"
+        )
+        default_choice=None
+        if cat in default_categories and editor_values:
+            default_choice=st.selectbox(
+                "預設值",
+                editor_values,
+                index=(editor_values.index(default_value)
+                       if default_value in editor_values else 0),
+                key=f"admin_default_{cat}"
+            )
         if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
-            values=text.splitlines()
-            if cat == "spicy":
+            values=clean_list(text.splitlines())
+            if cat=="spicy":
                 values=[v for v in values if str(v).strip()!="無"]
-            if default_choice not in values:
-                default_choice=values[0] if values else None
-            set_options(cat,values,default_choice); save_and_sync(); st.toast(f"✅ {label}已更新"); st.rerun()
+            if cat in default_categories:
+                if default_choice not in values:
+                    default_choice=values[0] if values else None
+                set_options(cat,values,default_choice)
+            else:
+                # 客製需求是 multi-select，沒有預設值。
+                set_options(cat,values,None)
+            save_and_sync()
+            st.toast(f"✅ {label}已更新")
+            st.rerun()
     if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True): st.rerun()
 
 @st.dialog("⚠️ 確認清空全部訂單")
@@ -1391,8 +1437,8 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         drink_manual_key = f"edit_d_manual_{order_id}"
 
         # 先用目前可用選項組成 prefix，從既有 custom 拆出基本飲料設定。
-        available_size_values = ["M(中杯)", "L(大杯)", "XL(特大杯)"]
-        parsed_size = "L(大杯)"
+        available_size_values = drink_size_options
+        parsed_size = get_default_option("drink_size") or (drink_size_options[0] if drink_size_options else None)
         parsed_sugar = sugar_levels[0] if sugar_levels else None
         parsed_ice = ice_levels[0] if ice_levels else None
         remainder = raw_custom
@@ -1434,11 +1480,11 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             st.session_state[drink_ice_key] = parsed_ice
 
         if st.session_state.get(drink_size_key) not in available_size_values:
-            st.session_state[drink_size_key] = available_size_values[1]
+            st.session_state[drink_size_key] = get_default_option("drink_size") or available_size_values[0]
         edit_size = st.pills(
             "尺寸（必選）",
             available_size_values,
-            default="L(大杯)",
+            default=get_default_option("drink_size"),
             key=drink_size_key,
             selection_mode="single"
         )
@@ -1870,7 +1916,7 @@ with tab1:
             d_size = st.pills(
                 "尺寸（必選）",
                 ["M(中杯)", "L(大杯)", "XL(特大杯)"],
-                default="L(大杯)",
+                default=get_default_option("drink_size"),
                 key="d_size",
                 selection_mode="single"
             )
