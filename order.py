@@ -4,7 +4,14 @@ import sqlite3
 import time
 import os
 import html
+import json
+import base64
+import urllib.request
+import urllib.parse
+import urllib.error
 from datetime import datetime
+from zoneinfo import ZoneInfo
+from cryptography.fernet import Fernet, InvalidToken
 
 # ==========================================
 # 0. 系統設定區
@@ -17,15 +24,14 @@ ORDER_COLUMNS = [
     "custom", "quantity", "order_time", "is_paid", "unit_price"
 ]
 
-# 人員與點餐選項是辦公室固定設定，統一由 Streamlit Secrets 管理。
-# [default_settings] -> colleagues
-# [default_options]  -> spicy / ice / sugar / tags / drink_tags
-# 這些固定設定不寫入 SQLite，避免產生兩套不同的設定來源.
+# 人員名單與主餐／飲料客製選項統一由 SQLite 管理，並加密同步 GitHub。
+# Streamlit Secrets 僅保留 [admin] 與 [github]。
 
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-st.set_page_config(page_title="點餐哦各位～ v3.5.2", page_icon="🍱", layout="wide")
+VERSION = "v3.6.0"
+st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
 <style>
@@ -125,230 +131,474 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ==========================================
 # 2. 資料庫邏輯區
 # ==========================================
-def get_settings_from_secrets():
-    colleagues = []
-    options = {"spicy": [], "ice": [], "sugar": [], "tags": [], "drink_tags": []}
 
-    try:
-        # 3.9 原本誤用了 [settings]；為相容目前已提供的 Secrets，
-        # 正式使用 [default_settings]，並同時接受舊版 [settings]。
-        settings = st.secrets.get("default_settings", {})
-        if not settings:
-            settings = st.secrets.get("settings", {})
-        colleagues = list(settings.get("colleagues", []))
-    except Exception:
-        pass
-
-    try:
-        # 正式使用 [default_options]，同時接受舊版 [options]。
-        secret_options = st.secrets.get("default_options", {})
-        if not secret_options:
-            secret_options = st.secrets.get("options", {})
-        for key in options:
-            options[key] = list(secret_options.get(key, []))
-    except Exception:
-        pass
-
-    return colleagues, options
+def db_connect():
+    return sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
 
 
-def unique_clean_list(values):
-    result = []
-    seen = set()
-    for value in values:
-        if value is None:
-            continue
-        value = str(value).strip()
-        if value and value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
+def taiwan_now():
+    return datetime.now(ZoneInfo("Asia/Taipei"))
 
 
-DEFAULT_COLLEAGUES, DEFAULT_OPTIONS = get_settings_from_secrets()
-DEFAULT_COLLEAGUES = unique_clean_list(DEFAULT_COLLEAGUES)
-if not DEFAULT_COLLEAGUES:
-    DEFAULT_COLLEAGUES = ["請在 Streamlit Secrets 的 [default_settings] 設定人員"]
-
-for _key in DEFAULT_OPTIONS:
-    DEFAULT_OPTIONS[_key] = unique_clean_list(DEFAULT_OPTIONS[_key])
-
-# 「無」是辣度的系統內建選項，不需要寫進 Secrets。
-DEFAULT_OPTIONS["spicy"] = [v for v in DEFAULT_OPTIONS["spicy"] if v != "無"]
-
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-    try:
-        c.execute("""CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, category TEXT, item_name TEXT,
-            price INTEGER, custom TEXT, quantity INTEGER, order_time TEXT, is_paid BOOLEAN,
-            unit_price INTEGER)""")
-
-        order_columns = {row[1] for row in c.execute("PRAGMA table_info(orders)").fetchall()}
-        if "unit_price" not in order_columns:
-            c.execute("ALTER TABLE orders ADD COLUMN unit_price INTEGER")
-            c.execute("""UPDATE orders
-                         SET unit_price = CASE
-                             WHEN quantity > 0 AND price % quantity = 0
-                             THEN price / quantity
-                             ELSE NULL
-                         END
-                         WHERE unit_price IS NULL""")
-
-        c.execute("""CREATE TABLE IF NOT EXISTS config_shop (
-            category TEXT PRIMARY KEY, shop_name TEXT)""")
-        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)",
-                  ("main", "吃什麼？"))
-        c.execute("INSERT OR IGNORE INTO config_shop (category, shop_name) VALUES (?, ?)",
-                  ("drink", "喝什麼？"))
-        conn.commit()
-    finally:
-        conn.close()
+def taiwan_now_str():
+    return taiwan_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def execute_db(query, params=()):
-    max_retries = 5
-    for attempt in range(max_retries):
+    for _ in range(5):
+        conn=None
         try:
-            conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
-            c = conn.cursor()
-            c.execute(query, params)
-            affected_rows = c.rowcount
+            conn=db_connect()
+            cur=conn.cursor()
+            cur.execute(query,params)
+            affected=cur.rowcount
             conn.commit()
-            conn.close()
-            return affected_rows
+            return affected
         except sqlite3.OperationalError as e:
-            if "locked" in str(e): time.sleep(0.1)
-            else: raise e
-    st.error("⚠️ 系統忙碌 (Database Locked)，請稍後再試")
-    return False
+            if "locked" in str(e).lower():
+                time.sleep(0.1)
+            else:
+                raise
+        finally:
+            if conn is not None: conn.close()
+    st.error("⚠️ 系統忙碌，請稍後再試。")
+    return 0
+
 
 def get_db(query, params=()):
-    max_retries = 3
-    last_error = None
+    try:
+        with db_connect() as conn:
+            return pd.read_sql_query(query,conn,params=params)
+    except Exception as e:
+        st.error(f"⚠️ 資料庫讀取失敗：{e}")
+        return pd.DataFrame()
 
-    for _ in range(max_retries):
-        conn = None
-        try:
-            conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
-            df = pd.read_sql_query(query, conn, params=params)
-            df.attrs["db_error"] = False
-            return df
-        except sqlite3.OperationalError as e:
-            last_error = e
-            if "locked" in str(e).lower():
-                time.sleep(0.2)
-            else:
-                break
-        except Exception as e:
-            last_error = e
-            break
-        finally:
-            if conn is not None:
-                conn.close()
 
-    # 保持原本回傳 DataFrame 的介面，但留下明確旗標，
-    # 讓統計／收款區可以區分「真的沒有訂單」與「資料庫暫時讀取失敗」。
-    failed_df = pd.DataFrame()
-    failed_df.attrs["db_error"] = True
-    failed_df.attrs["db_error_message"] = str(last_error) if last_error else "Unknown database read error"
-    return failed_df
+def get_admin_password():
+    try:
+        return str(st.secrets.get("admin",{}).get("password","")).strip()
+    except Exception:
+        return ""
 
-def get_orders_df():
-    """安全讀取 orders；保留「無資料」與「讀取失敗」的差異。"""
-    df = get_db("SELECT * FROM orders")
 
-    if df.attrs.get("db_error", False):
-        failed_df = pd.DataFrame(columns=ORDER_COLUMNS)
-        failed_df.attrs["db_error"] = True
-        failed_df.attrs["db_error_message"] = df.attrs.get(
-            "db_error_message", "Unknown database read error"
+def get_github_settings():
+    try:
+        cfg=st.secrets.get("github",{})
+        return (
+            str(cfg.get("token","")).strip(),
+            str(cfg.get("owner","")).strip(),
+            str(cfg.get("repo","")).strip(),
+            str(cfg.get("branch","main")).strip() or "main",
+            str(cfg.get("data_file","order_data.json")).strip() or "order_data.json",
+            str(cfg.get("encryption_key","")).strip(),
         )
-        return failed_df
+    except Exception:
+        return "","","","main","order_data.json",""
 
-    if df.empty:
-        return pd.DataFrame(columns=ORDER_COLUMNS)
 
-    for column in ORDER_COLUMNS:
-        if column not in df.columns:
-            if column in ("price", "quantity", "is_paid", "unit_price"):
-                df[column] = 0
-            else:
-                df[column] = ""
+def github_is_configured():
+    token,owner,repo,branch,path,key=get_github_settings()
+    return bool(token and owner and repo and key)
 
-    result = df[ORDER_COLUMNS].copy()
-    result.attrs["db_error"] = False
+
+def github_request(method,url,token,payload=None):
+    headers={"Accept":"application/vnd.github+json","Authorization":f"Bearer {token}",
+             "X-GitHub-Api-Version":"2026-03-10","User-Agent":"office-order-streamlit"}
+    data=None
+    if payload is not None:
+        data=json.dumps(payload,ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"]="application/json"
+    req=urllib.request.Request(url,data=data,headers=headers,method=method)
+    with urllib.request.urlopen(req,timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def test_github_encryption_key():
+    *_,key=get_github_settings()
+    if not key: return False,"尚未設定 encryption_key。"
+    try:
+        f=Fernet(key.encode("utf-8"))
+        plain=b"Office-Order encryption test"
+        return (True,"加密金鑰正常，可以正常加密／解密。") if f.decrypt(f.encrypt(plain))==plain else (False,"加密金鑰測試失敗。")
+    except Exception as e:
+        return False,f"encryption_key 格式錯誤：{e}"
+
+
+def encrypt_github_backup(data):
+    *_,key=get_github_settings()
+    if not key: raise ValueError("尚未設定 GitHub encryption_key。")
+    payload=dict(data); payload["backup_format"]="office-order-encrypted-v1"
+    raw=json.dumps(payload,ensure_ascii=False,separators=(",",":")).encode("utf-8")
+    return Fernet(key.encode("utf-8")).encrypt(raw).decode("ascii")
+
+
+def decrypt_github_backup(text):
+    *_,key=get_github_settings()
+    if not key: raise ValueError("尚未設定 GitHub encryption_key。")
+    try:
+        raw=Fernet(key.encode("utf-8")).decrypt(text.encode("ascii"))
+        data=json.loads(raw.decode("utf-8"))
+    except (InvalidToken,ValueError,UnicodeDecodeError,json.JSONDecodeError) as e:
+        raise ValueError("GitHub 備份無法解密：加密金鑰不正確，或備份內容已損壞。") from e
+    if data.get("backup_format")!="office-order-encrypted-v1":
+        raise ValueError("GitHub 備份格式不是目前的加密版本。")
+    return data
+
+
+def github_get_backup():
+    token,owner,repo,branch,path,_=get_github_settings()
+    if not (token and owner and repo): return None,None
+    url=f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={urllib.parse.quote(branch,safe='')}"
+    try:
+        result=github_request("GET",url,token)
+        encoded=result.get("content","").replace("\n","")
+        if not encoded.strip(): return None,result.get("sha")
+        text=base64.b64decode(encoded).decode("utf-8")
+        if not text.strip(): return None,result.get("sha")
+        return decrypt_github_backup(text),result.get("sha")
+    except urllib.error.HTTPError as e:
+        if e.code==404: return None,None
+        raise
+
+
+def github_put_backup(data):
+    token,owner,repo,branch,path,_=get_github_settings()
+    if not (token and owner and repo): return False,"尚未設定 GitHub Secrets。"
+    _,sha=github_get_backup()
+    encrypted=encrypt_github_backup(data)
+    payload={"message":f"Update encrypted order data {taiwan_now_str()}",
+             "content":base64.b64encode(encrypted.encode("ascii")).decode("ascii"),
+             "branch":branch}
+    if sha: payload["sha"]=sha
+    url=f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    try:
+        github_request("PUT",url,token,payload); return True,""
+    except urllib.error.HTTPError as e:
+        body=e.read().decode("utf-8",errors="replace")
+        return False,("GitHub 備份發生版本衝突，請稍後再試。" if e.code==409 else f"GitHub API 錯誤 {e.code}：{body[:300]}")
+    except Exception as e: return False,str(e)
+
+
+def get_members():
+    return get_db("SELECT id,name,sort_order FROM order_members ORDER BY sort_order,id")
+
+
+def get_options(category):
+    df=get_db("SELECT option_value FROM order_options WHERE category=? ORDER BY sort_order,id",(category,))
+    return df["option_value"].astype(str).tolist() if not df.empty else []
+
+
+def clean_list(values):
+    result=[]
+    for v in values:
+        v=str(v).strip()
+        if v and v not in result: result.append(v)
     return result
 
 
+def set_options(category,values):
+    values=clean_list(values)
+    conn=db_connect()
+    try:
+        conn.execute("DELETE FROM order_options WHERE category=?",(category,))
+        for idx,v in enumerate(values):
+            conn.execute("INSERT INTO order_options(category,option_value,sort_order) VALUES(?,?,?)",(category,v,idx))
+        conn.commit()
+    finally: conn.close()
+
+
+def get_orders_df():
+    df=get_db("SELECT * FROM orders")
+    if df.empty: return pd.DataFrame(columns=ORDER_COLUMNS)
+    for col in ORDER_COLUMNS:
+        if col not in df.columns: df[col]=0 if col in ("price","quantity","is_paid","unit_price") else ""
+    return df[ORDER_COLUMNS].copy()
+
+
 def get_shop_name(cat):
-    df = get_db("SELECT shop_name FROM config_shop WHERE category = ?", (cat,))
-    if not df.empty: return df.iloc[0]['shop_name']
-    return "未設定"
+    df=get_db("SELECT shop_name FROM config_shop WHERE category=?",(cat,))
+    return str(df.iloc[0]["shop_name"]) if not df.empty else "未設定"
 
-def set_shop_name(cat, name):
-    return bool(execute_db(
-        "UPDATE config_shop SET shop_name = ? WHERE category = ?",
-        (name, cat)
-    ))
 
-init_db()
+def set_shop_name(cat,name):
+    return bool(execute_db("UPDATE config_shop SET shop_name=? WHERE category=?",(name,cat)))
 
-# 人員與點餐選項直接來自 Streamlit Secrets，不再同步到 SQLite。
-colleagues_list = DEFAULT_COLLEAGUES
-spicy_levels = ["無"] + DEFAULT_OPTIONS["spicy"]
-ice_levels = DEFAULT_OPTIONS["ice"]
-sugar_levels = DEFAULT_OPTIONS["sugar"]
-custom_tags_main = DEFAULT_OPTIONS["tags"]
-custom_tags_drink = DEFAULT_OPTIONS["drink_tags"]
+
+def export_order_data():
+    data={"format":"office-order-backup","version":"4.0","exported_at":taiwan_now_str(),
+          "members":[],"options":{},"config_shop":[],"orders":[]}
+    with db_connect() as conn:
+        conn.row_factory=sqlite3.Row
+        data["members"]=[dict(r) for r in conn.execute("SELECT id,name,sort_order FROM order_members ORDER BY sort_order,id")]
+        for r in conn.execute("SELECT category,option_value,sort_order FROM order_options ORDER BY category,sort_order,id"):
+            data["options"].setdefault(r["category"],[]).append(r["option_value"])
+        data["config_shop"]=[dict(r) for r in conn.execute("SELECT category,shop_name FROM config_shop ORDER BY category")]
+        data["orders"]=[dict(r) for r in conn.execute("SELECT id,name,category,item_name,price,custom,quantity,order_time,is_paid,unit_price FROM orders ORDER BY id")]
+    return data
+
+
+def import_order_data(data):
+    if not isinstance(data,dict) or data.get("format") not in ("office-order-backup",None):
+        raise ValueError("這不是有效的點餐系統備份檔。")
+    if not isinstance(data.get("members",[]),list) or not isinstance(data.get("orders",[]),list):
+        raise ValueError("備份資料結構錯誤。")
+    conn=db_connect()
+    try:
+        cur=conn.cursor(); cur.execute("BEGIN")
+        for table in ("orders","order_members","order_options","config_shop"): cur.execute(f"DELETE FROM {table}")
+        for idx,m in enumerate(data.get("members",[])):
+            name=str(m.get("name","")).strip()
+            if name: cur.execute("INSERT INTO order_members(name,sort_order) VALUES(?,?)",(name,int(m.get("sort_order",idx))))
+        for cat,vals in data.get("options",{}).items():
+            if isinstance(vals,list):
+                for idx,v in enumerate(clean_list(vals)):
+                    cur.execute("INSERT INTO order_options(category,option_value,sort_order) VALUES(?,?,?)",(cat,v,idx))
+        for s in data.get("config_shop",[]):
+            if s.get("category") and s.get("shop_name"):
+                cur.execute("INSERT INTO config_shop(category,shop_name) VALUES(?,?)",(str(s["category"]),str(s["shop_name"])))
+        for o in data.get("orders",[]):
+            cur.execute("INSERT INTO orders(id,name,category,item_name,price,custom,quantity,order_time,is_paid,unit_price) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (int(o["id"]),str(o["name"]),str(o["category"]),str(o["item_name"]),int(o["price"]),str(o.get("custom","")),
+                         int(o["quantity"]),str(o["order_time"]),int(o.get("is_paid",0)),None if o.get("unit_price") is None else int(o["unit_price"])))
+        conn.commit()
+    except Exception:
+        conn.rollback(); raise
+    finally: conn.close()
+
+
+def sync_github_backup(show_error=False):
+    if GITHUB_SYNC_SUPPRESSED or not github_is_configured(): return False
+    try:
+        ok,msg=github_put_backup(export_order_data())
+        if ok:
+            st.session_state["github_sync_result"]=("success",f"🟢 **最後一次同步成功**\n\n同步時間：{taiwan_now_str()}（台灣時間）  \n名單：{len(get_members())} 人｜訂單：{len(get_orders_df())} 筆")
+        elif show_error: st.error(f"⚠️ GitHub 備份同步失敗：{msg}")
+        return ok
+    except Exception as e:
+        if show_error: st.error(f"⚠️ GitHub 備份同步失敗：{e}")
+        return False
+
+
+def restore_from_github_if_new_db(is_new_db):
+    if not is_new_db or not github_is_configured(): return False
+    global GITHUB_SYNC_SUPPRESSED
+    try:
+        backup,_=github_get_backup()
+        if not backup: return False
+        GITHUB_SYNC_SUPPRESSED=True
+        import_order_data(backup)
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ 找到 GitHub 備份，但自動還原失敗：{e}")
+        return False
+    finally: GITHUB_SYNC_SUPPRESSED=False
+
+
+def seed_legacy_secrets_once():
+    if not get_members().empty: return False
+    try:
+        settings=st.secrets.get("default_settings",{})
+        names=settings.get("colleagues",[])
+        opts=st.secrets.get("default_options",{})
+    except Exception:
+        return False
+    if not names and not opts: return False
+    for idx,name in enumerate(clean_list(names)):
+        execute_db("INSERT OR IGNORE INTO order_members(name,sort_order) VALUES(?,?)",(name,idx))
+    for cat in ("spicy","ice","sugar","tags","drink_tags"):
+        set_options(cat,opts.get(cat,[]))
+    return True
+
+
+def init_db():
+    conn=db_connect(); cur=conn.cursor()
+    existing={r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('orders','config_shop','order_members','order_options')")}
+    is_new_db=not existing
+    cur.execute("""CREATE TABLE IF NOT EXISTS orders(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,category TEXT,item_name TEXT,price INTEGER,
+        custom TEXT,quantity INTEGER,order_time TEXT,is_paid BOOLEAN,unit_price INTEGER)""")
+    cols={r[1] for r in cur.execute("PRAGMA table_info(orders)")}
+    if "unit_price" not in cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN unit_price INTEGER")
+        cur.execute("UPDATE orders SET unit_price=CASE WHEN quantity>0 AND price%quantity=0 THEN price/quantity ELSE NULL END WHERE unit_price IS NULL")
+    cur.execute("CREATE TABLE IF NOT EXISTS config_shop(category TEXT PRIMARY KEY,shop_name TEXT)")
+    cur.execute("INSERT OR IGNORE INTO config_shop VALUES('main','吃什麼？')")
+    cur.execute("INSERT OR IGNORE INTO config_shop VALUES('drink','喝什麼？')")
+    cur.execute("CREATE TABLE IF NOT EXISTS order_members(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,sort_order INTEGER NOT NULL DEFAULT 0)")
+    cur.execute("""CREATE TABLE IF NOT EXISTS order_options(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,category TEXT NOT NULL,option_value TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,UNIQUE(category,option_value))""")
+    conn.commit(); conn.close()
+    return is_new_db
+
+
+is_new_db=init_db()
+restored_from_github=restore_from_github_if_new_db(is_new_db)
+if not restored_from_github:
+    migrated=seed_legacy_secrets_once()
+    if (is_new_db or migrated) and github_is_configured(): sync_github_backup(False)
+
+colleagues_list=get_members()["name"].astype(str).tolist()
+if not colleagues_list: colleagues_list=["尚未設定人員，請登入管理員新增"]
+spicy_levels=["無"]+get_options("spicy")
+ice_levels=get_options("ice")
+sugar_levels=get_options("sugar")
+custom_tags_main=get_options("tags")
+custom_tags_drink=get_options("drink_tags")
+
+if "user_name" not in st.session_state: st.session_state["user_name"]=None
+if "m_custom_tags" not in st.session_state: st.session_state["m_custom_tags"]=[]
+if "m_custom_manual" not in st.session_state: st.session_state["m_custom_manual"]=""
+if "d_custom_tags" not in st.session_state: st.session_state["d_custom_tags"]=[]
+if "d_custom_manual" not in st.session_state: st.session_state["d_custom_manual"]=""
+if "admin_logged_in" not in st.session_state: st.session_state["admin_logged_in"]=False
+if "github_sync_result" not in st.session_state: st.session_state["github_sync_result"]=None
 
 
 # ==========================================
-# 3. 今日點餐管理
+# 3. 管理員功能
 # ==========================================
+def save_and_sync():
+    return sync_github_backup(show_error=True)
+
+
+def add_member(name):
+    name=str(name).strip()
+    if not name: return False,"姓名不能為空。"
+    if not get_db("SELECT 1 FROM order_members WHERE name=?",(name,)).empty: return False,"這個姓名已存在。"
+    mx=get_db("SELECT COALESCE(MAX(sort_order),-1) AS n FROM order_members")
+    execute_db("INSERT INTO order_members(name,sort_order) VALUES(?,?)",(name,int(mx.iloc[0]["n"])+1))
+    return True,""
+
+
+def rename_member(member_id,name):
+    name=str(name).strip()
+    current=get_db("SELECT name FROM order_members WHERE id=?",(member_id,))
+    if current.empty: return False,"找不到這位人員。"
+    if not name: return False,"姓名不能為空。"
+    if not get_db("SELECT 1 FROM order_members WHERE name=? AND id<>?",(name,member_id)).empty: return False,"這個姓名已存在。"
+    old=str(current.iloc[0]["name"])
+    execute_db("UPDATE order_members SET name=? WHERE id=?",(name,member_id))
+    execute_db("UPDATE orders SET name=? WHERE name=?",(name,old))
+    return True,""
+
+
+def move_member(member_id,direction):
+    members=get_members(); ids=members["id"].astype(int).tolist()
+    if int(member_id) not in ids: return
+    idx=ids.index(int(member_id)); target=idx+direction
+    if target<0 or target>=len(ids): return
+    a,b=members.iloc[idx],members.iloc[target]
+    execute_db("UPDATE order_members SET sort_order=? WHERE id=?",(int(b["sort_order"]),int(a["id"])))
+    execute_db("UPDATE order_members SET sort_order=? WHERE id=?",(int(a["sort_order"]),int(b["id"])))
+
+@st.dialog("👥 管理點餐人員",width="large")
+def manage_members_dialog():
+    st.caption("名單儲存在 lunch.db，並會加密同步到 GitHub。")
+    members=get_members()
+    for _,row in members.iterrows():
+        mid,name=int(row["id"]),str(row["name"])
+        c1,c2,c3,c4=st.columns([6,0.7,0.7,1])
+        c1.write(f"👤 {name}")
+        pos=list(members["id"]).index(mid)
+        if c2.button("⬆️",key=f"up_{mid}",disabled=pos==0,use_container_width=True):
+            move_member(mid,-1); save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+        if c3.button("⬇️",key=f"down_{mid}",disabled=pos==len(members)-1,use_container_width=True):
+            move_member(mid,1); save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+        with c4.popover("✏️"):
+            nn=st.text_input("姓名",value=name,key=f"rename_{mid}")
+            if st.button("儲存",key=f"rename_save_{mid}",use_container_width=True):
+                ok,msg=rename_member(mid,nn)
+                if ok: save_and_sync(); st.toast("✅ 姓名已修改"); st.session_state["reopen_members"]=True; st.rerun()
+                else: st.error(msg)
+    st.divider()
+    nm=st.text_input("新增人員",key="new_member_name")
+    if st.button("➕ 新增人員",use_container_width=True,type="primary"):
+        ok,msg=add_member(nm)
+        if ok: save_and_sync(); st.toast(f"✅ 已新增：{nm.strip()}"); st.session_state["reopen_members"]=True; st.rerun()
+        else: st.error(msg)
+    if st.button("✖️ 完成管理／關閉",key="close_members",use_container_width=True):
+        st.session_state["reopen_members"]=False; st.rerun()
+
+@st.dialog("🎨 管理主餐／飲料客製",width="large")
+def manage_options_dialog():
+    st.caption("主餐與飲料客製選項儲存在 lunch.db，Secrets 不再保存這些固定選項。")
+    labels={"spicy":"主餐辣度","ice":"飲料冰塊","sugar":"飲料甜度","tags":"主餐客製","drink_tags":"飲料客製"}
+    for cat,label in labels.items():
+        text=st.text_area(label,value="\n".join(get_options(cat)),height=110,key=f"admin_opt_{cat}",
+                          help="一行一個選項；空白行忽略，重複值自動去除。")
+        if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
+            set_options(cat,text.splitlines()); save_and_sync(); st.toast(f"✅ {label}已更新"); st.rerun()
+    if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True): st.rerun()
+
 with st.sidebar:
     st.header("⚙️ 點餐管理")
-
     st.subheader("1. 今日店家")
-    db_main_shop = get_shop_name("main")
-    db_drink_shop = get_shop_name("drink")
+    db_main_shop=get_shop_name("main"); db_drink_shop=get_shop_name("drink")
+    new_main_shop=st.text_input("主餐店家",value=db_main_shop).strip()
+    new_drink_shop=st.text_input("飲料店家",value=db_drink_shop).strip()
+    if new_main_shop and new_main_shop!=db_main_shop:
+        if set_shop_name("main",new_main_shop): save_and_sync(); st.rerun()
+    if new_drink_shop and new_drink_shop!=db_drink_shop:
+        if set_shop_name("drink",new_drink_shop): save_and_sync(); st.rerun()
 
-    new_main_shop = st.text_input("主餐店家", value=db_main_shop).strip()
-    new_drink_shop = st.text_input("飲料店家", value=db_drink_shop).strip()
-
-    if new_main_shop and new_main_shop != db_main_shop:
-        if set_shop_name("main", new_main_shop):
-            st.rerun()
-    if new_drink_shop and new_drink_shop != db_drink_shop:
-        if set_shop_name("drink", new_drink_shop):
-            st.rerun()
-
-    st.divider()
-    st.subheader("2. 清空本次訂單")
-
-    if "confirm_reset" not in st.session_state:
-        st.session_state.confirm_reset = False
-
-    if st.button("🗑️ 清空本次訂單", type="secondary"):
-        st.session_state.confirm_reset = True
-
+    st.divider(); st.subheader("2. 清空本次訂單")
+    if "confirm_reset" not in st.session_state: st.session_state.confirm_reset=False
+    if st.button("🗑️ 清空本次訂單",type="secondary"): st.session_state.confirm_reset=True
     if st.session_state.confirm_reset:
         st.warning("⚠️ 確定清空本次所有訂單？此動作無法復原。")
-        c1, c2 = st.columns(2)
+        c1,c2=st.columns(2)
+        if c1.button("✅ 確定",key="confirm_reset_orders"):
+            execute_db("DELETE FROM orders"); save_and_sync(); st.session_state.confirm_reset=False; st.toast("🗑️ 本次訂單已清空！"); st.rerun()
+        if c2.button("❌ 取消",key="cancel_reset_orders"): st.session_state.confirm_reset=False; st.rerun()
 
-        if c1.button("✅ 確定", key="confirm_reset_orders"):
-            if execute_db("DELETE FROM orders"):
-                st.session_state.confirm_reset = False
-                st.toast("🗑️ 本次訂單已清空！")
-                st.rerun()
+    st.divider(); st.subheader("🔐 管理員")
+    if not st.session_state.admin_logged_in:
+        pw=st.text_input("管理員密碼",type="password",key="admin_pw")
+        if st.button("🔑 管理員登入",use_container_width=True,type="primary"):
+            if pw and pw==get_admin_password(): st.session_state.admin_logged_in=True; st.rerun()
+            else: st.error("❌ 管理員密碼錯誤")
+    else:
+        st.success("🔓 管理員已登入")
+        if st.button("👥 管理人員名單",use_container_width=True,type="primary"): manage_members_dialog()
+        elif st.session_state.pop("reopen_members",False): manage_members_dialog()
+        if st.button("🎨 管理主餐／飲料客製",use_container_width=True): manage_options_dialog()
+        if st.button("🔒 管理員登出",use_container_width=True): st.session_state.admin_logged_in=False; st.rerun()
 
-        if c2.button("❌ 取消", key="cancel_reset_orders"):
-            st.session_state.confirm_reset = False
+        st.divider(); st.subheader("☁️ GitHub 永久資料")
+        result=st.session_state.get("github_sync_result")
+        if result:
+            kind,msg=result
+            st.success(msg) if kind=="success" else st.error(msg)
+        ok,msg=test_github_encryption_key()
+        st.caption("🔐 encryption_key：正常" if ok else f"🔐 encryption_key：{msg}")
+        if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary"):
+            if sync_github_backup(show_error=True): st.toast("✅ 已同步到 GitHub")
             st.rerun()
 
-
+        st.divider(); st.subheader("💾 資料備份")
+        data=json.dumps(export_order_data(),ensure_ascii=False,indent=2).encode("utf-8")
+        st.download_button("📥 匯出點餐資料",data=data,
+                           file_name=f"office_order_backup_{taiwan_now().strftime('%Y%m%d_%H%M%S')}.json",
+                           mime="application/json",use_container_width=True)
+        uploaded=st.file_uploader("📤 匯入點餐資料",type=["json"],key="order_backup_upload")
+        if uploaded is not None:
+            st.warning("⚠️ 匯入會取代目前的人員、客製選項、店家與所有訂單。")
+            if st.button("✅ 確定匯入此備份",key="confirm_order_import",use_container_width=True):
+                original=export_order_data()
+                try:
+                    imported=json.loads(uploaded.getvalue().decode("utf-8"))
+                    global_flag=GITHUB_SYNC_SUPPRESSED
+                    GITHUB_SYNC_SUPPRESSED=True
+                    try: import_order_data(imported)
+                    finally: GITHUB_SYNC_SUPPRESSED=global_flag
+                    if not sync_github_backup(False): raise RuntimeError("GitHub 備份同步失敗，匯入已取消。")
+                    st.session_state.pop("order_backup_upload",None); st.toast("✅ 點餐資料匯入成功！"); st.rerun()
+                except Exception as e:
+                    try:
+                        GITHUB_SYNC_SUPPRESSED=True; import_order_data(original)
+                    finally: GITHUB_SYNC_SUPPRESSED=global_flag
+                    st.error(f"❌ 匯入未完成：{e}")
 # ==========================================
 # 4. 統計看板 (全域去框線版本，移除編號)
 # ==========================================
@@ -742,6 +992,7 @@ def _pay_logic_grouped(cat, df, k):
                             tuple(ids)
                         )
                         if affected == len(ids):
+                            save_and_sync()
                             st.toast(f"💰 已完成收款：{name} (${total_price})")
                             st.rerun(scope="fragment")
                         else:
@@ -788,6 +1039,7 @@ def _pay_logic_grouped(cat, df, k):
                             tuple(ids)
                         )
                         if affected == len(ids):
+                            save_and_sync()
                             st.toast(f"↩️ 已撤銷收款：{name}")
                             st.rerun(scope="fragment")
                         else:
@@ -1219,6 +1471,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             )
 
             if affected == 1:
+                save_and_sync()
                 for _prefix in (
                     "edit_m_size_", "edit_m_spicy_", "edit_m_tags_",
                     "edit_m_manual_", "edit_d_size_", "edit_d_sugar_",
@@ -1306,6 +1559,7 @@ def render_my_orders(user_name):
                         if st.button("⭕ 確認", key=f"confirm_del_{row['id']}", type="primary", use_container_width=True):
                             # SQL 再次檢查 is_paid，避免畫面舊資料造成誤刪。
                             if execute_db("DELETE FROM orders WHERE id = ? AND is_paid = 0", (row['id'],)):
+                                save_and_sync()
                                 st.toast("✅ 已刪除")
                                 st.rerun()
 
@@ -1456,9 +1710,10 @@ with tab1:
                         "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
                         (
                             user_name, "主餐", m_name, total_p, cust, int(m_qty),
-                            datetime.now().strftime('%Y-%m-%d %H:%M'), int(m_price_unit)
+                            taiwan_now().strftime('%Y-%m-%d %H:%M'), int(m_price_unit)
                         )
                     ):
+                        save_and_sync()
                         # 新增成功後只清除「客製化」內容。
                         # 尺寸、辣度都屬於目前點餐介面的選擇，保留使用者剛才的設定，
                         # 與飲料尺寸/甜度/冰塊的操作方式一致。
@@ -1559,9 +1814,10 @@ with tab1:
                         "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
                         (
                             user_name, "飲料", d_name, total_p, final_cust, int(d_qty),
-                            datetime.now().strftime('%Y-%m-%d %H:%M'), int(d_price_unit)
+                            taiwan_now().strftime('%Y-%m-%d %H:%M'), int(d_price_unit)
                         )
                     ):
+                        save_and_sync()
                         # 只清除剛剛送出的飲料客製化，不影響尚未送出的主餐設定。
                         st.session_state["d_custom_tags"] = []
                         st.session_state["d_custom_manual"] = ""
