@@ -30,7 +30,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.3"
+VERSION = "v3.6.3
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -597,7 +597,7 @@ with st.sidebar:
                 st.error(msg)
 
         if github_is_configured():
-            token, owner, repo, branch, path = get_github_settings()
+            _, owner, repo, branch, path, _ = get_github_settings()
             st.caption(f"儲存位置：{owner}/{repo}/{path}（{branch}）")
         else:
             st.warning("⚠️ 尚未完整設定 GitHub 備份。")
