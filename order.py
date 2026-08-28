@@ -30,7 +30,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.1"
+VERSION = "v3.6.2"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -573,7 +573,10 @@ with st.sidebar:
         result=st.session_state.get("github_sync_result")
         if result:
             kind,msg=result
-            st.success(msg) if kind=="success" else st.error(msg)
+            if kind == "success":
+                st.success(msg)
+            else:
+                st.error(msg)
         ok,msg=test_github_encryption_key()
         st.caption("🔐 encryption_key：正常" if ok else f"🔐 encryption_key：{msg}")
         if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary"):
