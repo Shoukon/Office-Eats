@@ -48,7 +48,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.8"
+VERSION = "v4.1.3"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -390,7 +390,7 @@ def get_order_db_diagnostics():
 
 
 def export_order_data():
-    data={"format":"office-order-backup","version":"4.0","exported_at":taiwan_now_str(),
+    data={"format":"office-order-backup","version":"4.1","exported_at":taiwan_now_str(),
           "members":[],"options":{},"config_shop":[],"orders":[]}
     with db_connect() as conn:
         conn.row_factory=sqlite3.Row
@@ -1822,13 +1822,19 @@ with tab1:
             # 主餐尺寸固定為「無 / 小份 / 大份」；「無」可由資料庫設定為預設；預設值不寫入 custom。
             if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
                 st.session_state["m_size"] = get_default_option("main_size")
-            m_size = st.pills(
-                "尺寸（必選）",
-                MAIN_SIZE_OPTIONS,
-                default="無",
-                key="m_size",
-                selection_mode="single"
-            )
+            if MAIN_SIZE_OPTIONS:
+                if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
+                    st.session_state["m_size"] = get_default_option("main_size") or MAIN_SIZE_OPTIONS[0]
+                m_size = st.pills(
+                    "尺寸（必選）",
+                    MAIN_SIZE_OPTIONS,
+                    default=get_default_option("main_size") or MAIN_SIZE_OPTIONS[0],
+                    key="m_size",
+                    selection_mode="single"
+                )
+            else:
+                m_size = None
+                st.caption("主餐尺寸：目前沒有可選項目")
 
             # Secrets 修改選項後，舊的 session_state 可能還保留已不存在的選項。
             # 例如原本選「無」，後來從 Secrets 移除「無」，st.pills 可能回傳 None。
@@ -1929,13 +1935,19 @@ with tab1:
             d_price_unit = cp.number_input("單價（元）", min_value=0, step=5, format="%d", key="d_price")
             d_qty = cq.number_input("數量", min_value=1, step=1, value=1, key="d_qty")
             
-            d_size = st.pills(
-                "尺寸（必選）",
-                ["M(中杯)", "L(大杯)", "XL(特大杯)"],
-                default=get_default_option("drink_size"),
-                key="d_size",
-                selection_mode="single"
-            )
+            if drink_size_options:
+                if st.session_state.get("d_size") not in drink_size_options:
+                    st.session_state["d_size"] = get_default_option("drink_size") or drink_size_options[0]
+                d_size = st.pills(
+                    "尺寸（必選）",
+                    drink_size_options,
+                    default=get_default_option("drink_size") or drink_size_options[0],
+                    key="d_size",
+                    selection_mode="single"
+                )
+            else:
+                d_size = None
+                st.caption("飲料尺寸：目前沒有可選項目")
 
             if sugar_levels:
                 if st.session_state.get("d_sugar") not in sugar_levels:
