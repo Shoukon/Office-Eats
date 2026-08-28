@@ -30,7 +30,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.2"
+VERSION = "v3.6.3"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -328,6 +328,24 @@ def set_shop_name(cat,name):
     return bool(execute_db("UPDATE config_shop SET shop_name=? WHERE category=?",(name,cat)))
 
 
+
+def get_order_db_diagnostics():
+    """Return SQLite diagnostics for the administrator panel."""
+    result = {"exists": DB_PATH.exists(), "size": get_db_size(),
+              "tables": {}, "db_error": None, "secret_members": 0}
+    for table in ("order_members", "order_options", "orders", "order_config"):
+        try:
+            df = get_db(f"SELECT COUNT(*) AS n FROM {table}")
+            result["tables"][table] = int(df.iloc[0]["n"]) if not df.empty else 0
+        except Exception:
+            result["tables"][table] = 0
+    try:
+        result["secret_members"] = len(st.secrets.get("default_settings", {}).get("colleagues", []))
+    except Exception:
+        result["secret_members"] = 0
+    return result
+
+
 def export_order_data():
     data={"format":"office-order-backup","version":"4.0","exported_at":taiwan_now_str(),
           "members":[],"options":{},"config_shop":[],"orders":[]}
@@ -577,8 +595,16 @@ with st.sidebar:
                 st.success(msg)
             else:
                 st.error(msg)
+
+        if github_is_configured():
+            token, owner, repo, branch, path = get_github_settings()
+            st.caption(f"儲存位置：{owner}/{repo}/{path}（{branch}）")
+        else:
+            st.warning("⚠️ 尚未完整設定 GitHub 備份。")
+
         ok,msg=test_github_encryption_key()
         st.caption("🔐 encryption_key：正常" if ok else f"🔐 encryption_key：{msg}")
+
         if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary"):
             if sync_github_backup(show_error=True): st.toast("✅ 已同步到 GitHub")
             st.rerun()
@@ -606,6 +632,43 @@ with st.sidebar:
                         GITHUB_SYNC_SUPPRESSED=True; import_order_data(original)
                     finally: GITHUB_SYNC_SUPPRESSED=global_flag
                     st.error(f"❌ 匯入未完成：{e}")
+
+        st.divider(); st.subheader("🗄️ 資料庫資訊")
+        diag = get_order_db_diagnostics()
+        members_n = diag["tables"].get("order_members", 0)
+        orders_n = diag["tables"].get("orders", 0)
+        st.caption(f"名單：{members_n} 人　｜　訂單：{orders_n} 筆")
+        st.caption(f"資料庫：{DB_PATH}")
+        st.caption(f"檔案大小：{diag['size']:,} bytes")
+
+        with st.expander("🔎 資料庫診斷"):
+            st.caption(f"資料庫檔案存在：{'是' if diag['exists'] else '否'}")
+            for table in ("order_members", "order_options", "orders", "order_config"):
+                st.caption(f"{table}：{diag['tables'].get(table, 0)} 筆")
+            st.caption(f"Secrets 名單：{diag['secret_members']} 人")
+            if diag.get("db_error"):
+                st.error(f"資料庫診斷失敗：{diag['db_error']}")
+
+        st.divider(); st.subheader("🗑️ 資料管理")
+        if st.button("🗑️ 清空全部訂單",use_container_width=True):
+            st.session_state["confirm_clear_orders"] = True
+        if st.session_state.get("confirm_clear_orders", False):
+            st.warning("⚠️ 確定清空全部訂單？此動作無法復原。")
+            c1,c2=st.columns(2)
+            with c1:
+                if st.button("✅ 確定清除",key="confirm_clear_orders_yes",use_container_width=True):
+                    execute_db("DELETE FROM orders")
+                    st.session_state["confirm_clear_orders"] = False
+                    if sync_github_backup(False):
+                        st.toast("🗑️ 全部訂單已清除，GitHub 備份也已更新。")
+                    else:
+                        st.toast("🗑️ 全部訂單已清除。")
+                    st.rerun()
+            with c2:
+                if st.button("❌ 取消",key="confirm_clear_orders_no",use_container_width=True):
+                    st.session_state["confirm_clear_orders"] = False
+                    st.rerun()
+
 # ==========================================
 # 4. 統計看板 (全域去框線版本，移除編號)
 # ==========================================
