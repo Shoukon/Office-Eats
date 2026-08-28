@@ -1,5 +1,21 @@
 import streamlit as st
 from pathlib import Path
+
+
+def clean_list(values):
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = values.splitlines()
+    result=[]
+    seen=set()
+    for value in values:
+        value=str(value).strip()
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
 import pandas as pd
 import sqlite3
 import time
@@ -516,7 +532,7 @@ def ensure_single_select_defaults():
         vals=get_options(cat)
         if vals:
             # If no row is marked default, first row becomes the default.
-            if get_default_option(cat) != vals[0] and get_db(
+            if get_db(
                 "SELECT 1 FROM order_options WHERE category=? AND is_default=1",(cat,)
             ).empty:
                 set_options(cat,vals,vals[0])
