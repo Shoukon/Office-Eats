@@ -1,34 +1,18 @@
 import streamlit as st
-from pathlib import Path
-
-
-def clean_list(values):
-    if values is None:
-        return []
-    if isinstance(values, str):
-        values = values.splitlines()
-    result=[]
-    seen=set()
-    for value in values:
-        value=str(value).strip()
-        if value and value not in seen:
-            result.append(value)
-            seen.add(value)
-    return result
-
+import json
+from cryptography.fernet import Fernet, InvalidToken
+import base64
+import urllib.request
+import urllib.parse
+import urllib.error
 import pandas as pd
 import sqlite3
 import time
 import os
 import html
-import json
-import base64
-import urllib.request
-import urllib.parse
-import urllib.error
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from cryptography.fernet import Fernet, InvalidToken
 
 # ==========================================
 # 0. 系統設定區
@@ -48,7 +32,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.7"
+VERSION = "v3.7.1"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -329,7 +313,7 @@ def get_default_option(category):
 
 
 def set_options(category,values,default_value=None):
-    values=clean_list(values)
+    values=[str(v).strip() for v in values if str(v).strip()]
     conn=db_connect()
     try:
         conn.execute("DELETE FROM order_options WHERE category=?",(category,))
@@ -676,7 +660,7 @@ def manage_options_dialog():
                 key=f"admin_default_{cat}"
             )
         if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
-            values=clean_list(text.splitlines())
+            values=[v.strip() for v in text.splitlines() if v.strip()]
             if cat in default_categories:
                 if default_choice not in values:
                     default_choice=values[0] if values else None
