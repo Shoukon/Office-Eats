@@ -32,7 +32,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.7"
+VERSION = "v3.6.8"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -294,12 +294,40 @@ def get_options(category):
     return df["option_value"].astype(str).tolist() if not df.empty else []
 
 
-def clean_list(values):
-    result=[]
-    for v in values:
-        v=str(v).strip()
-        if v and v not in result: result.append(v)
-    return result
+def get_option_rows(category):
+    return get_db("""SELECT id,option_value,sort_order,is_default
+                     FROM order_options WHERE category=?
+                     ORDER BY sort_order,id""",(category,))
+
+
+def get_default_option(category):
+    df=get_db("""SELECT option_value FROM order_options
+                 WHERE category=? AND is_default=1
+                 ORDER BY sort_order,id LIMIT 1""",(category,))
+    if not df.empty:
+        return str(df.iloc[0]["option_value"])
+    vals=get_options(category)
+    return vals[0] if vals else None
+
+
+def set_options(category,values,default_value=None):
+    values=clean_list(values)
+    if category=="spicy":
+        values=[v for v in values if str(v).strip()!="無"]
+    conn=db_connect()
+    try:
+        conn.execute("DELETE FROM order_options WHERE category=?",(category,))
+        for idx,v in enumerate(values):
+            is_default=1 if default_value is not None and str(v)==str(default_value) else 0
+            conn.execute("""INSERT INTO order_options
+                            (category,option_value,sort_order,is_default)
+                            VALUES(?,?,?,?)""",(category,v,idx,is_default))
+        if values and not any(str(v)==str(default_value) for v in values):
+            conn.execute("""UPDATE order_options SET is_default=1
+                            WHERE category=? AND sort_order=0""",(category,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def set_options(category,values):
@@ -438,7 +466,11 @@ def seed_legacy_secrets_once():
     for idx,name in enumerate(clean_list(names)):
         execute_db("INSERT OR IGNORE INTO order_members(name,sort_order) VALUES(?,?)",(name,idx))
     for cat in ("spicy","ice","sugar","tags","drink_tags"):
-        set_options(cat,opts.get(cat,[]))
+        vals=opts.get(cat,[])
+        set_options(cat,vals,vals[0] if vals else None)
+    # 尺寸也改由 SQLite 管理；首次遷移時建立合理預設。
+    set_options("main_size",["無","小份","大份"],"無")
+    set_options("drink_size",["M","L","XL"],"L")
     return True
 
 
@@ -459,7 +491,11 @@ def init_db():
     cur.execute("CREATE TABLE IF NOT EXISTS order_members(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,sort_order INTEGER NOT NULL DEFAULT 0)")
     cur.execute("""CREATE TABLE IF NOT EXISTS order_options(
         id INTEGER PRIMARY KEY AUTOINCREMENT,category TEXT NOT NULL,option_value TEXT NOT NULL,
-        sort_order INTEGER NOT NULL DEFAULT 0,UNIQUE(category,option_value))""")
+        sort_order INTEGER NOT NULL DEFAULT 0,is_default INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(category,option_value))""")
+    cols_opt={r[1] for r in cur.execute("PRAGMA table_info(order_options)")}
+    if "is_default" not in cols_opt:
+        cur.execute("ALTER TABLE order_options ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0")
     conn.commit(); conn.close()
     return is_new_db
 
@@ -470,15 +506,13 @@ if not restored_from_github:
     migrated=seed_legacy_secrets_once()
     if (is_new_db or migrated) and github_is_configured(): sync_github_backup(False)
 
-# 「無」是主餐辣度的系統內建選項，不應儲存在 order_options。
-# 清理舊版本曾寫入資料庫的「無」，避免畫面出現兩個「無」。
-execute_db("DELETE FROM order_options WHERE category='spicy' AND option_value='無'")
-
 colleagues_list=get_members()["name"].astype(str).tolist()
 if not colleagues_list: colleagues_list=["尚未設定人員，請登入管理員新增"]
-spicy_levels=["無"]+[v for v in get_options("spicy") if str(v).strip() != "無"]
+spicy_levels=get_options("spicy") or ["無"]
 ice_levels=get_options("ice")
 sugar_levels=get_options("sugar")
+main_size_options=get_options("main_size") or ["無"]
+drink_size_options=get_options("drink_size") or ["M","L","XL"]
 custom_tags_main=get_options("tags")
 custom_tags_drink=get_options("drink_tags")
 
@@ -563,14 +597,21 @@ def manage_options_dialog():
     for cat,label in labels.items():
         editor_values=get_options(cat)
         if cat == "spicy":
-            editor_values=[v for v in editor_values if str(v).strip() != "無"]
+            editor_values=[v for v in editor_values if str(v).strip()!="無"]
+        default_value=get_default_option(cat)
         text=st.text_area(label,value="\n".join(editor_values),height=110,key=f"admin_opt_{cat}",
-                          help="一行一個選項；空白行忽略，重複值自動去除。「無」為系統內建選項，不需要加入。")
+                          help="一行一個選項；可調整順序；空白行忽略，重複值自動去除。")
+        default_choice=st.selectbox("預設值",editor_values,
+                                    index=(editor_values.index(default_value)
+                                           if default_value in editor_values else 0),
+                                    key=f"admin_default_{cat}") if editor_values else None
         if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
             values=text.splitlines()
             if cat == "spicy":
-                values=[v for v in values if str(v).strip() != "無"]
-            set_options(cat,values); save_and_sync(); st.toast(f"✅ {label}已更新"); st.rerun()
+                values=[v for v in values if str(v).strip()!="無"]
+            if default_choice not in values:
+                default_choice=values[0] if values else None
+            set_options(cat,values,default_choice); save_and_sync(); st.toast(f"✅ {label}已更新"); st.rerun()
     if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True): st.rerun()
 
 @st.dialog("⚠️ 確認清空全部訂單")
@@ -1141,7 +1182,7 @@ def _pay_logic_grouped(cat, df, k):
 # 6. 主畫面與 Dialogs 邏輯
 # ==========================================
 # 主餐尺寸：固定選項。「無」為預設值，儲存時不寫入 custom。
-MAIN_SIZE_OPTIONS = ["無", "小份", "大份"]
+MAIN_SIZE_OPTIONS = main_size_options
 
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 開始點餐", "📊 餐點統計", "💰 收款管理"])
@@ -1262,18 +1303,18 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         size_key = f"edit_m_size_{order_id}"
 
         if size_key not in st.session_state:
-            st.session_state[size_key] = main_size if main_size in MAIN_SIZE_OPTIONS else "無"
+            st.session_state[size_key] = main_size if main_size in MAIN_SIZE_OPTIONS else get_default_option("main_size")
         if spicy_key not in st.session_state:
             st.session_state[spicy_key] = main_spicy if main_spicy in spicy_levels else (spicy_levels[0] if spicy_levels else None)
         if manual_key not in st.session_state:
             st.session_state[manual_key] = main_manual
 
         if st.session_state.get(size_key) not in MAIN_SIZE_OPTIONS:
-            st.session_state[size_key] = "無"
+            st.session_state[size_key] = get_default_option("main_size")
         edit_size = st.pills(
             "尺寸（必選）",
             MAIN_SIZE_OPTIONS,
-            default="無",
+            default=get_default_option("main_size"),
             key=size_key,
             selection_mode="single"
         )
@@ -1714,11 +1755,11 @@ with tab1:
             # Streamlit widget 的 key 必須在 widget 建立前修改。
             # 若上一輪要求重設尺寸，本輪先重設，再建立 st.pills。
             if st.session_state.pop("_reset_m_size", False):
-                st.session_state["m_size"] = "無"
+                st.session_state["m_size"] = get_default_option("main_size")
 
-            # 主餐尺寸固定為「無 / 小份 / 大份」；「無」為預設且不寫入 custom。
+            # 主餐尺寸固定為「無 / 小份 / 大份」；「無」可由資料庫設定為預設；預設值不寫入 custom。
             if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
-                st.session_state["m_size"] = "無"
+                st.session_state["m_size"] = get_default_option("main_size")
             m_size = st.pills(
                 "尺寸（必選）",
                 MAIN_SIZE_OPTIONS,
