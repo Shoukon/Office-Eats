@@ -32,7 +32,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.6"
+VERSION = "v3.6.7"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -470,9 +470,13 @@ if not restored_from_github:
     migrated=seed_legacy_secrets_once()
     if (is_new_db or migrated) and github_is_configured(): sync_github_backup(False)
 
+# 「無」是主餐辣度的系統內建選項，不應儲存在 order_options。
+# 清理舊版本曾寫入資料庫的「無」，避免畫面出現兩個「無」。
+execute_db("DELETE FROM order_options WHERE category='spicy' AND option_value='無'")
+
 colleagues_list=get_members()["name"].astype(str).tolist()
 if not colleagues_list: colleagues_list=["尚未設定人員，請登入管理員新增"]
-spicy_levels=["無"]+get_options("spicy")
+spicy_levels=["無"]+[v for v in get_options("spicy") if str(v).strip() != "無"]
 ice_levels=get_options("ice")
 sugar_levels=get_options("sugar")
 custom_tags_main=get_options("tags")
@@ -557,10 +561,16 @@ def manage_options_dialog():
     st.caption("主餐與飲料客製選項儲存在 lunch.db，Secrets 不再保存這些固定選項。")
     labels={"spicy":"主餐辣度","ice":"飲料冰塊","sugar":"飲料甜度","tags":"主餐客製","drink_tags":"飲料客製"}
     for cat,label in labels.items():
-        text=st.text_area(label,value="\n".join(get_options(cat)),height=110,key=f"admin_opt_{cat}",
-                          help="一行一個選項；空白行忽略，重複值自動去除。")
+        editor_values=get_options(cat)
+        if cat == "spicy":
+            editor_values=[v for v in editor_values if str(v).strip() != "無"]
+        text=st.text_area(label,value="\n".join(editor_values),height=110,key=f"admin_opt_{cat}",
+                          help="一行一個選項；空白行忽略，重複值自動去除。「無」為系統內建選項，不需要加入。")
         if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
-            set_options(cat,text.splitlines()); save_and_sync(); st.toast(f"✅ {label}已更新"); st.rerun()
+            values=text.splitlines()
+            if cat == "spicy":
+                values=[v for v in values if str(v).strip() != "無"]
+            set_options(cat,values); save_and_sync(); st.toast(f"✅ {label}已更新"); st.rerun()
     if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True): st.rerun()
 
 @st.dialog("⚠️ 確認清空全部訂單")
