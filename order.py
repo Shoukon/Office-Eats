@@ -48,7 +48,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6"
+VERSION = "v3.6.1"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
