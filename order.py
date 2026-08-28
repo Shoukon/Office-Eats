@@ -48,7 +48,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v4.1.8"
+VERSION = "v4.1.9"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -647,6 +647,16 @@ def manage_options_dialog():
                 # 客製需求是 multi-select，沒有預設值。
                 set_options(cat,values,None)
             save_and_sync()
+
+            # 選項／預設值已寫入 SQLite；清除目前點餐畫面殘留的
+            # widget state，讓返回主畫面時重新採用最新 DB 預設值。
+            option_widget_keys = (
+                "m_size", "m_spicy", "d_size", "d_sugar", "d_ice",
+                "m_custom_tags", "d_custom_tags",
+            )
+            for widget_key in option_widget_keys:
+                st.session_state.pop(widget_key, None)
+
             st.toast(f"✅ {label}已更新")
             st.session_state["reopen_options"]=True
             st.rerun()
