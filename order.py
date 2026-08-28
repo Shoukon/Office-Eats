@@ -742,6 +742,10 @@ with st.sidebar:
         finally:
             conn.close()
 
+    st.divider(); st.subheader("🗑️ 資料管理")
+    if st.button("🗑️ 清空全部訂單",use_container_width=True):
+        clear_orders_dialog()
+
     st.divider(); st.subheader("🔐 管理員")
     if not st.session_state.admin_logged_in:
         pw=st.text_input("管理員密碼",type="password",key="admin_pw")
@@ -820,11 +824,6 @@ with st.sidebar:
             st.caption(f"Secrets 名單：{diag['secret_members']} 人")
             if diag.get("db_error"):
                 st.error(f"資料庫診斷失敗：{diag['db_error']}")
-
-        st.divider(); st.subheader("🗑️ 資料管理")
-        if st.button("🗑️ 清空全部訂單",use_container_width=True):
-            clear_orders_dialog()
-
 
 # ==========================================
 # 4. 統計看板 (全域去框線版本，移除編號)
