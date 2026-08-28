@@ -1,4 +1,5 @@
 import streamlit as st
+from pathlib import Path
 import pandas as pd
 import sqlite3
 import time
@@ -17,6 +18,7 @@ from cryptography.fernet import Fernet, InvalidToken
 # 0. 系統設定區
 # ==========================================
 DB_FILE = "lunch.db"
+DB_PATH = Path(DB_FILE)
 
 # orders 固定欄位。統計與收款頁會用這份欄位定義做防禦性處理。
 ORDER_COLUMNS = [
@@ -30,7 +32,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.3"
+VERSION = "v3.6.4"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -329,11 +331,19 @@ def set_shop_name(cat,name):
 
 
 
+
+def get_db_size():
+    try:
+        return DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    except OSError:
+        return 0
+
+
 def get_order_db_diagnostics():
     """Return SQLite diagnostics for the administrator panel."""
     result = {"exists": DB_PATH.exists(), "size": get_db_size(),
               "tables": {}, "db_error": None, "secret_members": 0}
-    for table in ("order_members", "order_options", "orders", "order_config"):
+    for table in ("order_members", "order_options", "orders", "config_shop"):
         try:
             df = get_db(f"SELECT COUNT(*) AS n FROM {table}")
             result["tables"][table] = int(df.iloc[0]["n"]) if not df.empty else 0
@@ -643,7 +653,7 @@ with st.sidebar:
 
         with st.expander("🔎 資料庫診斷"):
             st.caption(f"資料庫檔案存在：{'是' if diag['exists'] else '否'}")
-            for table in ("order_members", "order_options", "orders", "order_config"):
+            for table in ("order_members", "order_options", "orders", "config_shop"):
                 st.caption(f"{table}：{diag['tables'].get(table, 0)} 筆")
             st.caption(f"Secrets 名單：{diag['secret_members']} 人")
             if diag.get("db_error"):
