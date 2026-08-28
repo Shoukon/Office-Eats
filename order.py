@@ -48,7 +48,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v4.1.5"
+VERSION = "v4.1.8"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -470,26 +470,6 @@ def restore_from_github_if_new_db(is_new_db):
     finally: GITHUB_SYNC_SUPPRESSED=False
 
 
-def seed_legacy_secrets_once():
-    if not get_members().empty: return False
-    try:
-        settings=st.secrets.get("default_settings",{})
-        names=settings.get("colleagues",[])
-        opts=st.secrets.get("default_options",{})
-    except Exception:
-        return False
-    if not names and not opts: return False
-    for idx,name in enumerate(clean_list(names)):
-        execute_db("INSERT OR IGNORE INTO order_members(name,sort_order) VALUES(?,?)",(name,idx))
-    for cat in ("spicy","ice","sugar","tags","drink_tags"):
-        vals=opts.get(cat,[])
-        set_options(cat,vals,vals[0] if vals else None)
-    # 尺寸也改由 SQLite 管理；首次遷移時建立合理預設。
-    set_options("main_size",["無","小份","大份"],"無")
-    set_options("drink_size",["M","L","XL"],"L")
-    return True
-
-
 def init_db():
     conn=db_connect(); cur=conn.cursor()
     existing={r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('orders','config_shop','order_members','order_options')")}
@@ -517,29 +497,29 @@ def init_db():
 
 
 is_new_db=init_db()
+restored_from_github=restore_from_github_if_new_db(is_new_db)
 
 def ensure_single_select_defaults():
-    categories_defaults={
-        "main_size":["無","小份","大份"],
-        "drink_size":["M","L","XL"],
+    bootstrap={
+        "main_size":(["無","小份","大份"],"無"),
+        "spicy":(["無","微辣","小辣","中辣","大辣"],"無"),
+        "drink_size":(["M","L","XL"],"L"),
+        "ice":(["完全去冰","去冰","微冰","少冰","正常冰","溫","熱"],"完全去冰"),
+        "sugar":(["無糖","一分糖","微糖","少糖","半糖","正常糖"],"無糖"),
     }
-    for cat,values in categories_defaults.items():
+    for cat,(values,default_value) in bootstrap.items():
         if not get_options(cat):
-            set_options(cat,values,values[0] if cat=="main_size" else "L")
-    for cat in ("spicy","ice","sugar"):
-        vals=get_options(cat)
-        if vals:
-            # If no row is marked default, first row becomes the default.
-            if get_db(
-                "SELECT 1 FROM order_options WHERE category=? AND is_default=1",(cat,)
-            ).empty:
+            set_options(cat,values,default_value)
+        elif get_db(
+            "SELECT 1 FROM order_options WHERE category=? AND is_default=1",(cat,)
+        ).empty:
+            vals=get_options(cat)
+            if vals:
                 set_options(cat,vals,vals[0])
 
 ensure_single_select_defaults()
-restored_from_github=restore_from_github_if_new_db(is_new_db)
-if not restored_from_github:
-    migrated=seed_legacy_secrets_once()
-    if (is_new_db or migrated) and github_is_configured(): sync_github_backup(False)
+if is_new_db and not restored_from_github and github_is_configured():
+    sync_github_backup(False)
 
 colleagues_list=get_members()["name"].astype(str).tolist()
 if not colleagues_list: colleagues_list=["尚未設定人員，請登入管理員新增"]
@@ -702,16 +682,6 @@ with st.sidebar:
     if new_drink_shop and new_drink_shop!=db_drink_shop:
         if set_shop_name("drink",new_drink_shop): save_and_sync(); st.rerun()
 
-    st.divider(); st.subheader("2. 清空本次訂單")
-    if "confirm_reset" not in st.session_state: st.session_state.confirm_reset=False
-    if st.button("🗑️ 清空本次訂單",type="secondary"): st.session_state.confirm_reset=True
-    if st.session_state.confirm_reset:
-        st.warning("⚠️ 確定清空本次所有訂單？此動作無法復原。")
-        c1,c2=st.columns(2)
-        if c1.button("✅ 確定",key="confirm_reset_orders"):
-            execute_db("DELETE FROM orders"); save_and_sync(); st.session_state.confirm_reset=False; st.toast("🗑️ 本次訂單已清空！"); st.rerun()
-        if c2.button("❌ 取消",key="cancel_reset_orders"): st.session_state.confirm_reset=False; st.rerun()
-
     st.divider(); st.subheader("🔐 管理員")
     if not st.session_state.admin_logged_in:
         pw=st.text_input("管理員密碼",type="password",key="admin_pw")
@@ -840,14 +810,16 @@ def render_stats_section():
         parts = [p.strip() for p in raw.split(",") if p is not None and p.strip()]
 
         if category == "主餐":
-            size_order = {"": 0, "小份": 1, "大份": 2}
-            spicy_order = {"無": 0, "微辣": 1, "小辣": 2, "中辣": 3, "大辣": 4}
+            main_sizes=get_options("main_size")
+            spicy_options=get_options("spicy")
+            size_order={value:idx for idx,value in enumerate(main_sizes)}
+            spicy_order={value:idx for idx,value in enumerate(spicy_options)}
 
             size = ""
             spicy = ""
 
             # 新格式：尺寸, 辣度, 其他客製
-            if parts and parts[0] in ("小份", "大份"):
+            if parts and parts[0] in size_order:
                 size = parts.pop(0)
 
             # 新格式（無尺寸）或舊格式：第一個欄位直接是辣度。
@@ -858,7 +830,7 @@ def render_stats_section():
             if size:
                 display_parts.append(size)
             if spicy:
-                display_parts.append("不辣" if spicy == "無" else spicy)
+                display_parts.append(spicy)
             display_parts.extend(parts)
 
             return (
@@ -870,23 +842,20 @@ def render_stats_section():
             )
 
         if category == "飲料":
-            size_order = {"M(中杯)": 0, "L(大杯)": 1, "XL(特大杯)": 2}
-            sugar_order = {
-                "無糖": 0, "一分糖": 1, "微糖": 2,
-                "少糖": 3, "半糖": 4, "正常糖": 5,
-            }
-            ice_order = {
-                "完全去冰": 0, "去冰": 1, "微冰": 2,
-                "少冰": 3, "正常冰": 4, "溫": 5, "熱": 6,
-            }
+            drink_sizes=get_options("drink_size")
+            sugar_options=get_options("sugar")
+            ice_options=get_options("ice")
+            size_order={value:idx for idx,value in enumerate(drink_sizes)}
+            sugar_order={value:idx for idx,value in enumerate(sugar_options)}
+            ice_order={value:idx for idx,value in enumerate(ice_options)}
 
             # 飲料儲存格式是：
             # 尺寸/甜度/冰塊[, 其他客製]
-            # 例如：L(大杯)/微糖/微冰
-            #       XL(特大杯)/無糖/去冰, 加珍珠
+            # 例如：飲料尺寸/甜度/冰塊
+            #       飲料尺寸/甜度/冰塊, 加珍珠
             #
             # 3.9.8 錯誤地只用逗號切割，導致整個
-            # 「L(大杯)/微糖/微冰」被當成一個未知欄位，
+            # 「飲料尺寸/甜度/冰塊」被當成一個未知欄位，
             # 因而尺寸權重全部失效。這裡按照實際資料格式解析。
             base_part, separator, tag_part = raw.partition(",")
             base_values = [
@@ -924,7 +893,7 @@ def render_stats_section():
                 extra_parts = parts
 
             # 與主餐統一：所有基本設定與客製項目都用「・」分隔。
-            # 例如：L(大杯)・微糖・微冰・加珍珠
+            # 例如：飲料尺寸・甜度・冰塊・加珍珠
             display_parts = [value for value in (size, sugar, ice) if value]
             display_parts.extend(extra_parts)
 
@@ -1084,7 +1053,7 @@ def render_stats_section():
             st.metric("本區總額", f"${df_source['price'].sum()}")
 
         with c_det:
-            st.markdown("**📋 訂單明細（核對用）**")
+            st.markdown("**📋 訂單明細**")
             grouped_by_person = df_source.groupby('name')
             for name, group in grouped_by_person:
                 group = group.sort_values(
@@ -1246,7 +1215,6 @@ def _pay_logic_grouped(cat, df, k):
 # 6. 主畫面與 Dialogs 邏輯
 # ==========================================
 # 主餐尺寸：固定選項。「無」為預設值，儲存時不寫入 custom。
-MAIN_SIZE_OPTIONS = main_size_options
 
 st.title("🍱 點餐哦各位～")
 tab1, tab2, tab3 = st.tabs(["📝 開始點餐", "📊 餐點統計", "💰 收款管理"])
@@ -1367,17 +1335,17 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         size_key = f"edit_m_size_{order_id}"
 
         if size_key not in st.session_state:
-            st.session_state[size_key] = main_size if main_size in MAIN_SIZE_OPTIONS else get_default_option("main_size")
+            st.session_state[size_key] = main_size if main_size in main_size_options else get_default_option("main_size")
         if spicy_key not in st.session_state:
             st.session_state[spicy_key] = main_spicy if main_spicy in spicy_levels else (spicy_levels[0] if spicy_levels else None)
         if manual_key not in st.session_state:
             st.session_state[manual_key] = main_manual
 
-        if st.session_state.get(size_key) not in MAIN_SIZE_OPTIONS:
+        if st.session_state.get(size_key) not in main_size_options:
             st.session_state[size_key] = get_default_option("main_size")
         edit_size = st.pills(
             "尺寸（必選）",
-            MAIN_SIZE_OPTIONS,
+            main_size_options,
             default=get_default_option("main_size"),
             key=size_key,
             selection_mode="single"
@@ -1648,7 +1616,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
         elif int(current_check.iloc[0]["is_paid"] or 0) == 1:
             st.error("🔒 這筆訂單已完成收款，無法修改。")
-        elif edit_category == "主餐" and edit_size not in MAIN_SIZE_OPTIONS:
+        elif edit_category == "主餐" and edit_size not in main_size_options:
             st.error("請選擇餐點尺寸")
         elif not new_name:
             st.error("餐點名稱不能為空")
@@ -1822,15 +1790,15 @@ with tab1:
                 st.session_state["m_size"] = get_default_option("main_size")
 
             # 主餐尺寸固定為「無 / 小份 / 大份」；「無」可由資料庫設定為預設；預設值不寫入 custom。
-            if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
+            if st.session_state.get("m_size") not in main_size_options:
                 st.session_state["m_size"] = get_default_option("main_size")
-            if MAIN_SIZE_OPTIONS:
-                if st.session_state.get("m_size") not in MAIN_SIZE_OPTIONS:
-                    st.session_state["m_size"] = get_default_option("main_size") or MAIN_SIZE_OPTIONS[0]
+            if main_size_options:
+                if st.session_state.get("m_size") not in main_size_options:
+                    st.session_state["m_size"] = get_default_option("main_size") or main_size_options[0]
                 m_size = st.pills(
                     "尺寸（必選）",
-                    MAIN_SIZE_OPTIONS,
-                    default=get_default_option("main_size") or MAIN_SIZE_OPTIONS[0],
+                    main_size_options,
+                    default=get_default_option("main_size") or main_size_options[0],
                     key="m_size",
                     selection_mode="single"
                 )
@@ -1838,13 +1806,14 @@ with tab1:
                 m_size = None
                 st.caption("主餐尺寸：目前沒有可選項目")
 
-            # Secrets 修改選項後，舊的 session_state 可能還保留已不存在的選項。
-            # 例如原本選「無」，後來從 Secrets 移除「無」，st.pills 可能回傳 None。
+            # 管理員修改選項後，舊的 session_state 可能暫時保留已不存在的值。
+            # 
             if spicy_levels:
+                spicy_default = get_default_option("spicy") or spicy_levels[0]
                 if st.session_state.get("m_spicy") not in spicy_levels:
-                    st.session_state["m_spicy"] = spicy_levels[0]
+                    st.session_state["m_spicy"] = spicy_default
                 m_spicy = st.pills(
-                    "辣度", spicy_levels, default=spicy_levels[0],
+                    "辣度", spicy_levels, default=spicy_default,
                     key="m_spicy", selection_mode="single"
                 )
             else:
@@ -1883,7 +1852,7 @@ with tab1:
             if display_parts: st.caption(f"ℹ️ 即將加入：{html.escape(str(display_text))}")
 
             if st.button("＋ 加入主餐", type="primary", use_container_width=True):
-                if m_size not in MAIN_SIZE_OPTIONS:
+                if m_size not in main_size_options:
                     st.toast("🚫 無法加入：請選擇餐點尺寸！", icon="⚠️")
                 elif m_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
@@ -1952,10 +1921,11 @@ with tab1:
                 st.caption("飲料尺寸：目前沒有可選項目")
 
             if sugar_levels:
+                sugar_default = get_default_option("sugar") or sugar_levels[0]
                 if st.session_state.get("d_sugar") not in sugar_levels:
-                    st.session_state["d_sugar"] = sugar_levels[0]
+                    st.session_state["d_sugar"] = sugar_default
                 d_sugar = st.pills(
-                    "甜度", sugar_levels, default=sugar_levels[0],
+                    "甜度", sugar_levels, default=sugar_default,
                     key="d_sugar", selection_mode="single"
                 )
             else:
@@ -1963,10 +1933,11 @@ with tab1:
                 st.caption("甜度：目前沒有可選項目")
 
             if ice_levels:
+                ice_default = get_default_option("ice") or ice_levels[0]
                 if st.session_state.get("d_ice") not in ice_levels:
-                    st.session_state["d_ice"] = ice_levels[0]
+                    st.session_state["d_ice"] = ice_default
                 d_ice = st.pills(
-                    "冰塊", ice_levels, default=ice_levels[0],
+                    "冰塊", ice_levels, default=ice_default,
                     key="d_ice", selection_mode="single"
                 )
             else:
@@ -1995,7 +1966,7 @@ with tab1:
             if d_display_list: st.caption(f"ℹ️ 即將加入：{html.escape(str(d_display_text))}")
 
             if st.button("＋ 加入飲料", type="primary", use_container_width=True):
-                if d_size not in ("M(中杯)", "L(大杯)", "XL(特大杯)"):
+                if d_size not in drink_size_options:
                     st.toast("🚫 無法加入：請選擇飲料尺寸！", icon="⚠️")
                 elif d_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
