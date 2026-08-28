@@ -48,7 +48,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v4.1.4"
+VERSION = "v4.1.5"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -659,8 +659,6 @@ def manage_options_dialog():
             )
         if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
             values=clean_list(text.splitlines())
-            if cat=="spicy":
-                values=[v for v in values if str(v).strip()!="無"]
             if cat in default_categories:
                 if default_choice not in values:
                     default_choice=values[0] if values else None
