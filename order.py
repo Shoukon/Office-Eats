@@ -30,7 +30,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.0"
+VERSION = "v3.6.1"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -131,6 +131,10 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ==========================================
 # 2. 資料庫邏輯區
 # ==========================================
+
+
+# Prevent automatic GitHub sync while restoring a backup into SQLite.
+GITHUB_SYNC_SUPPRESSED = False
 
 def db_connect():
     return sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
