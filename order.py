@@ -48,7 +48,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v4.1.9"
+VERSION = "v4.2.0"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -1319,7 +1319,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         # 新格式：尺寸, 辣度, 快速客製...
         # 舊資料沒有尺寸時，第一段仍可能直接是辣度，因此兼容舊格式。
         main_size = "無"
-        if custom_parts and custom_parts[0] in ("小份", "大份"):
+        if custom_parts and custom_parts[0] in get_options("main_size"):
             main_size = custom_parts.pop(0)
 
         if custom_parts and custom_parts[0] in spicy_levels:
