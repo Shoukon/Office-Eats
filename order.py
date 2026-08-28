@@ -158,10 +158,8 @@ def db_connect():
     return sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
 
 
-TAIWAN_TZ = ZoneInfo("Asia/Taipei")
-
 def taiwan_now():
-    return datetime.now(TAIWAN_TZ)
+    return datetime.now(ZoneInfo("Asia/Taipei"))
 
 
 def taiwan_now_str():
@@ -355,42 +353,12 @@ def get_orders_df():
 
 
 def get_shop_name(cat):
-    df = get_db(
-        "SELECT shop_name FROM config_shop WHERE category=?",
-        (cat,)
-    )
-    return str(df.iloc[0]["shop_name"]).strip() if not df.empty else ""
-
-
-def get_current_shop_names():
-    """Single source of truth for UI: current SQLite config_shop values."""
-    with db_connect() as conn:
-        rows = conn.execute(
-            "SELECT category, shop_name FROM config_shop "
-            "WHERE category IN ('main','drink')"
-        ).fetchall()
-    result = {"main": "", "drink": ""}
-    for category, shop_name in rows:
-        result[category] = "" if shop_name is None else str(shop_name).strip()
-    return result
+    df=get_db("SELECT shop_name FROM config_shop WHERE category=?",(cat,))
+    return str(df.iloc[0]["shop_name"]) if not df.empty else "未設定"
 
 
 def set_shop_name(cat,name):
-    name = str(name).strip()
-    conn = db_connect()
-    try:
-        conn.execute(
-            "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-            "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-            (cat, name)
-        )
-        conn.commit()
-        return True
-    except Exception:
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
+    return bool(execute_db("UPDATE config_shop SET shop_name=? WHERE category=?",(name,cat)))
 
 
 
@@ -462,14 +430,8 @@ def import_order_data(data):
                             (cat,value,idx,is_default)
                         )
         for s in data.get("config_shop",[]):
-            category = str(s.get("category","")).strip()
-            if category:
-                # 空白店家也是有效資料，必須完整還原；不能因為空白而略過。
-                shop_name = str(s.get("shop_name","")).strip()
-                cur.execute(
-                    "INSERT INTO config_shop(category,shop_name) VALUES(?,?)",
-                    (category, shop_name)
-                )
+            if s.get("category") and s.get("shop_name"):
+                cur.execute("INSERT INTO config_shop(category,shop_name) VALUES(?,?)",(str(s["category"]),str(s["shop_name"])))
         for o in data.get("orders",[]):
             cur.execute("INSERT INTO orders(id,name,category,item_name,price,custom,quantity,order_time,is_paid,unit_price) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (int(o["id"]),str(o["name"]),str(o["category"]),str(o["item_name"]),int(o["price"]),str(o.get("custom","")),
@@ -721,46 +683,14 @@ def clear_orders_dialog():
 
 with st.sidebar:
     st.header("⚙️ 點餐管理")
-    st.subheader("1. 今日店家")
+    st.subheader("今日店家")
     db_main_shop=get_shop_name("main"); db_drink_shop=get_shop_name("drink")
-    new_main_shop=st.text_input("主餐店家",value=db_main_shop, key="shop_main_input").strip()
-    new_drink_shop=st.text_input("飲料店家",value=db_drink_shop, key="shop_drink_input").strip()
-
-    if st.button("💾 儲存今日店家", key="save_shop_names", use_container_width=True):
-        conn=db_connect()
-        try:
-            conn.execute(
-                "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-                "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-                ("main", new_main_shop)
-            )
-            conn.execute(
-                "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-                "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-                ("drink", new_drink_shop)
-            )
-            conn.commit()
-
-            # 驗證：寫入後立即重新讀 SQLite，確保不是只改到 widget state。
-            saved = get_current_shop_names()
-            if saved["main"] != new_main_shop or saved["drink"] != new_drink_shop:
-                raise RuntimeError("SQLite 店家資料寫入後驗證不一致。")
-
-            sync_ok=save_and_sync()
-            if sync_ok:
-                st.success("✅ 今日店家已儲存並同步")
-            else:
-                st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
-            st.rerun()
-        except Exception as e:
-            conn.rollback()
-            st.error(f"⚠️ 今日店家儲存失敗：{e}")
-        finally:
-            conn.close()
-
-    st.divider(); st.subheader("🗑️ 資料管理")
-    if st.button("🗑️ 清空全部訂單",use_container_width=True):
-        clear_orders_dialog()
+    new_main_shop=st.text_input("主餐店家",value=db_main_shop).strip()
+    new_drink_shop=st.text_input("飲料店家",value=db_drink_shop).strip()
+    if new_main_shop and new_main_shop!=db_main_shop:
+        if set_shop_name("main",new_main_shop): save_and_sync(); st.rerun()
+    if new_drink_shop and new_drink_shop!=db_drink_shop:
+        if set_shop_name("drink",new_drink_shop): save_and_sync(); st.rerun()
 
     st.divider(); st.subheader("🔐 管理員")
     if not st.session_state.admin_logged_in:
@@ -841,6 +771,9 @@ with st.sidebar:
             if diag.get("db_error"):
                 st.error(f"資料庫診斷失敗：{diag['db_error']}")
 
+        st.divider(); st.subheader("🗑️ 資料管理")
+        if st.button("🗑️ 清空全部訂單",use_container_width=True):
+            clear_orders_dialog()
 
 
 # ==========================================
@@ -851,13 +784,12 @@ def render_stats_section():
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
         # 字體微調為 0.95rem
-        st.markdown(f'<div style="text-align:right; color:color-mix(in srgb, var(--text-color) 58%, transparent); font-size:0.9rem; margin:0; padding:0;">更新於 {taiwan_now_str().split(" ")[1]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:right; color:color-mix(in srgb, var(--text-color) 58%, transparent); font-size:0.9rem; margin:0; padding:0;">更新於 {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
     with c_ref_btn:
-        if st.button("🔄", help="立即重新整理統計資料", use_container_width=True, key="btn_refresh_stats"): st.rerun()
+        if st.button("🔄", help="立即重新整理統計資料", use_container_width=True, key="btn_refresh_stats"): st.rerun(scope="fragment")
 
-    shop_names = get_current_shop_names()
-    r_name = shop_names["main"]
-    d_name = shop_names["drink"]
+    r_name = get_shop_name("main")
+    d_name = get_shop_name("drink")
     df_all = get_orders_df()
     if df_all.attrs.get("db_error", False):
         st.error("⚠️ 暫時無法讀取訂單資料，請稍後重新整理。")
@@ -1170,16 +1102,15 @@ def render_stats_section():
 def render_payment_section():
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
-        st.markdown(f'<div style="text-align:right; color:color-mix(in srgb, var(--text-color) 58%, transparent); font-size:0.9rem; margin:0; padding:0;">更新於 {taiwan_now_str().split(" ")[1]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:right; color:color-mix(in srgb, var(--text-color) 58%, transparent); font-size:0.9rem; margin:0; padding:0;">更新於 {datetime.now().strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
     with c_ref_btn:
-        if st.button("🔄", help="立即重新整理收款資料", use_container_width=True, key="btn_refresh_payment"): st.rerun()
+        if st.button("🔄", help="立即重新整理收款資料", use_container_width=True, key="btn_refresh_payment"): st.rerun(scope="fragment")
 
     df_all = get_orders_df()
     if df_all.empty: st.write("尚無訂單。"); return
     
-    shop_names = get_current_shop_names()
-    main_shop = shop_names["main"]
-    drink_shop = shop_names["drink"]
+    main_shop = get_shop_name("main")
+    drink_shop = get_shop_name("drink")
     
     df_all["price"] = pd.to_numeric(df_all["price"], errors="coerce").fillna(0).astype(int)
     df_main = df_all[df_all['category'] == '主餐'].copy()
@@ -1239,7 +1170,7 @@ def _pay_logic_grouped(cat, df, k):
                         if affected == len(ids):
                             save_and_sync()
                             st.toast(f"💰 已完成收款：{name} (${total_price})")
-                            st.rerun()
+                            st.rerun(scope="fragment")
                         else:
                             st.error("⚠️ 收款狀態未完整更新，請重新整理後確認。")
                 
@@ -1286,7 +1217,7 @@ def _pay_logic_grouped(cat, df, k):
                         if affected == len(ids):
                             save_and_sync()
                             st.toast(f"↩️ 已撤銷收款：{name}")
-                            st.rerun()
+                            st.rerun(scope="fragment")
                         else:
                             st.error("⚠️ 收款狀態未完整更新，請重新整理後確認。")
 
@@ -1739,6 +1670,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
 
 
+@st.fragment(run_every="5s")
 def render_my_orders(user_name):
     my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
     my_sum = my_orders['price'].sum() if not my_orders.empty else 0
@@ -1849,8 +1781,8 @@ with tab1:
             edit_request["custom"],
         )
 
-    current_main_shop = get_shop_name("main")
-    current_drink_shop = get_shop_name("drink")
+    current_main_shop = new_main_shop
+    current_drink_shop = new_drink_shop
 
     c_food, c_drink = st.columns(2)
     with c_food:
