@@ -48,7 +48,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v4.1.3"
+VERSION = "v4.1.4"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -328,8 +328,6 @@ def get_default_option(category):
 
 def set_options(category,values,default_value=None):
     values=clean_list(values)
-    if category=="spicy":
-        values=[v for v in values if str(v).strip()!="無"]
     conn=db_connect()
     try:
         conn.execute("DELETE FROM order_options WHERE category=?",(category,))
@@ -426,7 +424,7 @@ def import_order_data(data):
                     else:
                         value=str(v).strip()
                         is_default=0
-                    if value and not (cat=="spicy" and value=="無"):
+                    if value:
                         cur.execute(
                             "INSERT INTO order_options(category,option_value,sort_order,is_default) VALUES(?,?,?,?)",
                             (cat,value,idx,is_default)
@@ -630,7 +628,6 @@ def manage_members_dialog():
 @st.dialog("🎨 管理主餐／飲料客製",width="large")
 def manage_options_dialog():
     st.caption("主餐與飲料客製選項儲存在 lunch.db，Secrets 不再保存這些固定選項。")
-    labels={"spicy":"主餐辣度","ice":"飲料冰塊","sugar":"飲料甜度","tags":"主餐客製","drink_tags":"飲料客製"}
     labels={
         "main_size":"主餐尺寸",
         "spicy":"主餐辣度",
@@ -673,8 +670,11 @@ def manage_options_dialog():
                 set_options(cat,values,None)
             save_and_sync()
             st.toast(f"✅ {label}已更新")
+            st.session_state["reopen_options"]=True
             st.rerun()
-    if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True): st.rerun()
+    if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True):
+        st.session_state["reopen_options"]=False
+        st.rerun()
 
 @st.dialog("⚠️ 確認清空全部訂單")
 def clear_orders_dialog():
@@ -724,7 +724,11 @@ with st.sidebar:
         st.success("🔓 管理員已登入")
         if st.button("👥 管理人員名單",use_container_width=True,type="primary"): manage_members_dialog()
         elif st.session_state.pop("reopen_members",False): manage_members_dialog()
-        if st.button("🎨 管理主餐／飲料客製",use_container_width=True): manage_options_dialog()
+        if st.button("🎨 管理主餐／飲料客製",use_container_width=True):
+            st.session_state["reopen_options"]=False
+            manage_options_dialog()
+        elif st.session_state.pop("reopen_options",False):
+            manage_options_dialog()
         if st.button("🔒 管理員登出",use_container_width=True): st.session_state.admin_logged_in=False; st.rerun()
 
         st.divider(); st.subheader("☁️ GitHub 永久資料")
