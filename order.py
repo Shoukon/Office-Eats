@@ -32,7 +32,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.6.5"
+VERSION = "v3.6.6"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -1134,7 +1134,7 @@ def _pay_logic_grouped(cat, df, k):
 MAIN_SIZE_OPTIONS = ["無", "小份", "大份"]
 
 st.title("🍱 點餐哦各位～")
-tab1, tab2, tab3 = st.tabs(["📝 開始點餐", "📊 統計看板", "💰 收款管理"])
+tab1, tab2, tab3 = st.tabs(["📝 開始點餐", "📊 餐點統計", "💰 收款管理"])
 
 @st.dialog("👤 請選擇您的姓名")
 def login_dialog():
@@ -1654,6 +1654,8 @@ if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'
 if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = []
 if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
 
+with tab2: render_stats_section()
+
 with tab1:
     if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
     
@@ -1906,5 +1908,4 @@ with tab1:
                         st.toast(f"✅ 已加入：{d_name} ×{d_qty}"); st.rerun()
                 else: st.toast("⚠️ 請輸入飲料名稱")
 
-with tab2: render_stats_section()
 with tab3: render_payment_section()
