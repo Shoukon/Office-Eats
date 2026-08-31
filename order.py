@@ -621,15 +621,36 @@ def manage_members_dialog():
             move_member(mid,-1); save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
         if c3.button("⬇️",key=f"down_{mid}",disabled=pos==len(members)-1,use_container_width=True):
             move_member(mid,1); save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
-        with c4.popover("✏️"):
-            nn=st.text_input("姓名",value=name,key=f"rename_{mid}")
-            if st.button("儲存",key=f"rename_save_{mid}",use_container_width=True):
-                ok,msg=rename_member(mid,nn)
-                if ok: save_and_sync(); st.toast("✅ 姓名已修改"); st.session_state["reopen_members"]=True; st.rerun()
-                else: st.error(msg)
-            st.divider()
-            if st.button("🗑️ 刪除這位人員",key=f"delete_member_{mid}",use_container_width=True):
-                confirm_delete_member_dialog(mid,name)
+        if st.session_state.get(f"confirm_delete_member_{mid}",False):
+            st.warning(f"⚠️ 確定要刪除「{name}」嗎？")
+            st.caption("刪除後會從點餐人員名單移除，並同步更新 GitHub。")
+            d1,d2=st.columns(2)
+            with d1:
+                if st.button("取消",key=f"cancel_delete_{mid}",use_container_width=True):
+                    st.session_state.pop(f"confirm_delete_member_{mid}",None)
+                    st.rerun()
+            with d2:
+                if st.button("確定刪除",key=f"confirm_delete_{mid}",use_container_width=True):
+                    ok,msg=delete_member(mid)
+                    if ok:
+                        st.session_state.pop(f"confirm_delete_member_{mid}",None)
+                        save_and_sync()
+                        st.toast(f"🗑️ 已刪除：{msg}")
+                        st.session_state["reopen_members"]=True
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        else:
+            with c4.popover("✏️"):
+                nn=st.text_input("姓名",value=name,key=f"rename_{mid}")
+                if st.button("儲存",key=f"rename_save_{mid}",use_container_width=True):
+                    ok,msg=rename_member(mid,nn)
+                    if ok: save_and_sync(); st.toast("✅ 姓名已修改"); st.session_state["reopen_members"]=True; st.rerun()
+                    else: st.error(msg)
+                st.divider()
+                if st.button("🗑️ 刪除這位人員",key=f"delete_member_{mid}",use_container_width=True):
+                    st.session_state[f"confirm_delete_member_{mid}"]=True
+                    st.rerun()
     st.divider()
     nm=st.text_input("新增人員",key="new_member_name")
     if st.button("➕ 新增人員",use_container_width=True,type="primary"):
@@ -697,26 +718,6 @@ def manage_options_dialog():
     if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True):
         st.session_state["reopen_options"]=False
         st.rerun()
-
-@st.dialog("⚠️ 刪除點餐人員")
-def confirm_delete_member_dialog(member_id,name):
-    st.warning(f"確定要刪除「{name}」嗎？")
-    st.caption("刪除後會從點餐人員名單移除，並同步更新 GitHub。")
-    c1,c2=st.columns(2)
-    with c1:
-        if st.button("取消",key=f"cancel_member_delete_{member_id}",use_container_width=True):
-            st.rerun()
-    with c2:
-        if st.button("確定刪除",key=f"confirm_member_delete_{member_id}",use_container_width=True):
-            ok,msg=delete_member(member_id)
-            if ok:
-                save_and_sync()
-                st.toast(f"🗑️ 已刪除：{msg}")
-                st.session_state["reopen_members"]=True
-                st.rerun()
-            else:
-                st.error(msg)
-
 
 @st.dialog("⚠️ 確認清空全部訂單")
 def clear_orders_dialog():
