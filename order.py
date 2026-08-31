@@ -590,6 +590,15 @@ def rename_member(member_id,name):
     return True,""
 
 
+def delete_member(member_id):
+    current=get_db("SELECT name FROM order_members WHERE id=?",(member_id,))
+    if current.empty:
+        return False,"找不到這位人員。"
+    name=str(current.iloc[0]["name"])
+    execute_db("DELETE FROM order_members WHERE id=?",(member_id,))
+    return True,name
+
+
 def move_member(member_id,direction):
     members=get_members(); ids=members["id"].astype(int).tolist()
     if int(member_id) not in ids: return
@@ -618,6 +627,27 @@ def manage_members_dialog():
                 ok,msg=rename_member(mid,nn)
                 if ok: save_and_sync(); st.toast("✅ 姓名已修改"); st.session_state["reopen_members"]=True; st.rerun()
                 else: st.error(msg)
+            st.divider()
+            if st.button("🗑️ 刪除這位人員",key=f"delete_member_{mid}",use_container_width=True):
+                st.session_state[f"confirm_delete_member_{mid}"]=True
+            if st.session_state.get(f"confirm_delete_member_{mid}",False):
+                st.warning(f"確定要刪除「{name}」嗎？")
+                d1,d2=st.columns(2)
+                with d1:
+                    if st.button("取消",key=f"cancel_delete_{mid}",use_container_width=True):
+                        st.session_state[f"confirm_delete_member_{mid}"]=False
+                        st.rerun()
+                with d2:
+                    if st.button("確定刪除",key=f"confirm_delete_{mid}",use_container_width=True):
+                        ok,msg=delete_member(mid)
+                        if ok:
+                            st.session_state.pop(f"confirm_delete_member_{mid}",None)
+                            save_and_sync()
+                            st.toast(f"🗑️ 已刪除：{msg}")
+                            st.session_state["reopen_members"]=True
+                            st.rerun()
+                        else:
+                            st.error(msg)
     st.divider()
     nm=st.text_input("新增人員",key="new_member_name")
     if st.button("➕ 新增人員",use_container_width=True,type="primary"):
