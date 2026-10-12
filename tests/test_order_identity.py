@@ -3,6 +3,7 @@ import ast
 import copy
 import sqlite3
 import threading
+import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -344,6 +345,68 @@ class FakeUI:
     def toast(self, message, **kwargs): self.toasts.append(message)
     def rerun(self): pass
     def __getattr__(self, name): return lambda *args, **kwargs: None
+
+
+class PillsSessionStateTests(unittest.TestCase):
+    """Execute only existing selection blocks, never application bootstrap."""
+    keys = {'m_size':'main_size_options', 'm_spicy':'spicy_levels',
+            'd_size':'drink_size_options', 'd_sugar':'sugar_levels', 'd_ice':'ice_levels'}
+
+    def block(self, key):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        call=next(n for n in ast.walk(tree) if isinstance(n,ast.Call)
+                  and isinstance(n.func,ast.Attribute) and n.func.attr=='pills'
+                  and any(k.arg=='key' and isinstance(k.value,ast.Constant) and k.value.value==key for k in n.keywords))
+        return min((n for n in ast.walk(tree) if isinstance(n,ast.If)
+                    and n.lineno<=call.lineno<=n.end_lineno),key=lambda n:n.end_lineno-n.lineno)
+
+    def render(self,key,state,options=('first','chosen')):
+        ui=FakeUI(); ui.session_state.update(state); seen=[]
+        def pills(label,values,**kw):
+            self.assertNotIn('default',kw)
+            self.assertIn(key,ui.session_state)
+            seen.append(ui.session_state[key]); return ui.session_state[key]
+        ui.pills=pills
+        env={'st':ui,'get_default_option':lambda cat:'chosen',self.keys[key]:list(options)}
+        exec(compile(ast.Module(body=[self.block(key)],type_ignores=[]),str(SOURCE),'exec'),env)
+        return ui,seen
+
+    def test_initial_defaults_and_existing_selection_preserved(self):
+        for key in self.keys:
+            for state,expected in (({},'chosen'),({key:'first'},'first')):
+                with self.subTest(key=key,state=state):
+                    self.assertEqual(self.render(key,state)[1],[expected])
+
+    def test_disabled_or_cleared_selection_uses_existing_fallback(self):
+        for key in self.keys:
+            for value in ('retired',None):
+                with self.subTest(key=key,value=value):
+                    self.assertEqual(self.render(key,{key:value})[1],['chosen'])
+
+    def test_empty_options_do_not_create_widget(self):
+        for key in self.keys:
+            with self.subTest(key=key): self.assertEqual(self.render(key,{},())[1],[])
+
+    def test_main_size_reset_still_sets_database_default(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        reset=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and '_reset_m_size' in ast.unparse(n.test))
+        ui=FakeUI(); ui.session_state.update(m_size='first',_reset_m_size=True)
+        exec(compile(ast.Module(body=[reset],type_ignores=[]),str(SOURCE),'exec'),
+             {'st':ui,'get_default_option':lambda cat:'chosen'})
+        self.assertEqual(ui.session_state['m_size'],'chosen')
+        self.assertNotIn('_reset_m_size',ui.session_state)
+
+    def test_edit_main_pills_also_use_initialized_state_without_default(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        edit=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='edit_order_dialog')
+        found=[]
+        for call in ast.walk(edit):
+            if not isinstance(call,ast.Call) or not isinstance(call.func,ast.Attribute) or call.func.attr!='pills': continue
+            keys=[k.value for k in call.keywords if k.arg=='key']
+            if keys and isinstance(keys[0],ast.Name) and keys[0].id in ('size_key','spicy_key'):
+                self.assertFalse(any(k.arg=='default' for k in call.keywords))
+                found.append(keys[0].id)
+        self.assertEqual(set(found),{'size_key','spicy_key'})
 
 
 class OrderUIIntegrationTests(IsolatedTest):

@@ -1570,7 +1570,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         edit_size = st.pills(
             "尺寸（必選）",
             main_size_options,
-            default=get_default_option("main_size"),
             key=size_key,
             selection_mode="single"
         )
@@ -1581,7 +1580,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             edit_spicy = st.pills(
                 "辣度",
                 spicy_levels,
-                default=spicy_levels[0],
                 key=spicy_key,
                 selection_mode="single"
             )
@@ -1970,7 +1968,6 @@ with tab1:
                 m_size = st.pills(
                     "尺寸（必選）",
                     main_size_options,
-                    default=get_default_option("main_size") or main_size_options[0],
                     key="m_size",
                     selection_mode="single"
                 )
@@ -1985,7 +1982,7 @@ with tab1:
                 if st.session_state.get("m_spicy") not in spicy_levels:
                     st.session_state["m_spicy"] = spicy_default
                 m_spicy = st.pills(
-                    "辣度", spicy_levels, default=spicy_default,
+                    "辣度", spicy_levels,
                     key="m_spicy", selection_mode="single"
                 )
             else:
@@ -2082,7 +2079,6 @@ with tab1:
                 d_size = st.pills(
                     "尺寸（必選）",
                     drink_size_options,
-                    default=get_default_option("drink_size") or drink_size_options[0],
                     key="d_size",
                     selection_mode="single"
                 )
@@ -2095,7 +2091,7 @@ with tab1:
                 if st.session_state.get("d_sugar") not in sugar_levels:
                     st.session_state["d_sugar"] = sugar_default
                 d_sugar = st.pills(
-                    "甜度", sugar_levels, default=sugar_default,
+                    "甜度", sugar_levels,
                     key="d_sugar", selection_mode="single"
                 )
             else:
@@ -2107,7 +2103,7 @@ with tab1:
                 if st.session_state.get("d_ice") not in ice_levels:
                     st.session_state["d_ice"] = ice_default
                 d_ice = st.pills(
-                    "冰塊", ice_levels, default=ice_default,
+                    "冰塊", ice_levels,
                     key="d_ice", selection_mode="single"
                 )
             else:
