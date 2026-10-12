@@ -409,6 +409,95 @@ class PillsSessionStateTests(unittest.TestCase):
         self.assertEqual(set(found),{'size_key','spicy_key'})
 
 
+class DrinkDialogStateTests(IsolatedTest):
+    """Real widget registration in AppTest; browser dismiss events remain untested."""
+    def app(self):
+        import tempfile
+        previous_tempdir=tempfile.tempdir
+        tempfile.tempdir=str(self.db.parent)
+        try:
+            from streamlit.testing.v1 import AppTest
+        finally:
+            tempfile.tempdir=previous_tempdir
+        source=SOURCE.read_text(encoding='utf-8-sig'); tree=ast.parse(source)
+        definitions=[]
+        for name in ('open_drink_custom_dialog','custom_dialog'):
+            node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
+            definitions.append(('@st.dialog("Fake drink custom")\n' if name=='custom_dialog' else '')+ast.get_source_segment(source,node))
+        script='import streamlit as st\n'+'\n\n'.join(definitions)+'''
+st.session_state.setdefault('d_custom_tags', [])
+st.session_state.setdefault('d_custom_manual', '')
+st.session_state.setdefault('m_custom_manual', 'fake meal unchanged')
+if st.button('Fake open', key='open'):
+    st.session_state['_test_dialog_visible']=True
+    open_drink_custom_dialog(['fake tag'])
+elif st.session_state.get('_test_dialog_visible', False):
+    custom_dialog('d_custom', ['fake tag'])
+'''
+        path=self.db.parent/'fake_dialog_only.py'; path.write_text(script,encoding='utf-8')
+        app=AppTest.from_file(str(path)); app.secrets={'fake_only':True}; app.run()
+        return app
+
+    def open(self,app):
+        app.button(key='open').click().run()
+        self.assertEqual(len(app.exception),0)
+        self.assertFalse(any('default value' in warning.value for warning in app.warning))
+
+    def test_unconfirmed_draft_is_discarded_on_new_open_intent(self):
+        app=self.app(); self.open(app)
+        app.text_input[0].set_value('fake unsaved').run()
+        self.assertEqual(app.text_input[0].value,'fake unsaved')
+        self.assertEqual(app.session_state['d_custom_manual'],'')
+        # New open intent with old widget state still present (not a browser X event).
+        self.open(app)
+        self.assertEqual(app.text_input[0].value,'')
+        self.assertEqual(app.session_state['d_custom_manual'],'')
+
+    def test_open_replaces_stale_tag_widget_and_preserves_committed_values(self):
+        ui=FakeUI()
+        ui.session_state.update(d_custom_tags=['fake tag'],d_custom_manual='fake confirmed',
+            d_custom_pills_widget=['fake draft'],d_custom_manual_widget='fake unsaved',
+            m_custom_manual='fake meal unchanged')
+        env=load_app_functions(['open_drink_custom_dialog'],st=ui,custom_dialog=lambda *args:None)
+        env['open_drink_custom_dialog'](['fake tag'])
+        self.assertEqual(ui.session_state['d_custom_pills_widget'],['fake tag'])
+        self.assertEqual(ui.session_state['d_custom_manual_widget'],'fake confirmed')
+        self.assertEqual(ui.session_state['d_custom_tags'],['fake tag'])
+        self.assertEqual(ui.session_state['d_custom_manual'],'fake confirmed')
+        self.assertEqual(ui.session_state['m_custom_manual'],'fake meal unchanged')
+
+    def test_completed_then_cleared_business_values_reopen_empty(self):
+        app=self.app(); self.open(app)
+        app.text_input[0].set_value('fake completed').run()
+        done=next(button for button in app.button if button.label=='✅ 完成')
+        done.click().run()
+        self.assertEqual(app.session_state['d_custom_manual'],'fake completed')
+        app.session_state['d_custom_tags']=[]; app.session_state['d_custom_manual']=''
+        self.open(app)
+        self.assertEqual(app.text_input[0].value,'')
+        self.assertEqual(app.session_state['d_custom_pills_widget'],[])
+        self.assertEqual(app.session_state['m_custom_manual'],'fake meal unchanged')
+
+    def test_successful_creation_clear_path_and_reopen(self):
+        source=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        creation=next(n for n in ast.walk(source) if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Call) and isinstance(n.test.func,ast.Name)
+            and n.test.func.id=='create_member_order' and n.test.args[1].elts[0].value=='飲料')
+        resets=[n for n in creation.body if isinstance(n,ast.Assign)
+                and isinstance(n.targets[0],ast.Subscript)
+                and isinstance(n.targets[0].slice,ast.Constant)
+                and n.targets[0].slice.value in ('d_custom_tags','d_custom_manual')]
+        self.assertEqual(len(resets),2)
+        app=self.app(); self.open(app)
+        app.text_input[0].set_value('fake order custom').run()
+        next(b for b in app.button if b.label=='✅ 完成').click().run()
+        exec(compile(ast.Module(body=resets,type_ignores=[]),str(SOURCE),'exec'),
+             {'st':SimpleNamespace(session_state=app.session_state)})
+        self.open(app)
+        self.assertEqual(app.text_input[0].value,'')
+        self.assertEqual(app.session_state['d_custom_tags'],[])
+
+
 class OrderUIIntegrationTests(IsolatedTest):
     def env(self, ui, synced):
         import html
@@ -500,10 +589,11 @@ class OrderUIIntegrationTests(IsolatedTest):
     def test_drink_custom_dialog_commits_only_on_done(self):
         ui=FakeUI(); ui.session_state.update(d_custom_tags=['加珍珠'],d_custom_manual='不要吸管')
         before=dict(ui.session_state)
-        env=load_app_functions(['custom_dialog'],st=ui)
+        env=load_app_functions(['custom_dialog','open_drink_custom_dialog'],st=ui)
         ui.text_values['其他客製需求']='新備註'
-        env['custom_dialog']('d_custom',['加珍珠'])
-        self.assertEqual(ui.session_state,before)  # no Done: business values unchanged
+        env['open_drink_custom_dialog'](['加珍珠'])
+        self.assertEqual(ui.session_state['d_custom_tags'],before['d_custom_tags'])
+        self.assertEqual(ui.session_state['d_custom_manual'],before['d_custom_manual'])
         ui.clicked.add('✅ 完成')
         env['custom_dialog']('d_custom',['加珍珠'])
         self.assertEqual(ui.session_state['d_custom_manual'],'新備註')
