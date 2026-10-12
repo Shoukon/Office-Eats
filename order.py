@@ -596,7 +596,16 @@ if "github_sync_result" not in st.session_state: st.session_state["github_sync_r
 # 3. 管理員功能
 # ==========================================
 def save_and_sync():
-    return sync_github_backup(show_error=True)
+    # Return value describes backup confirmation, not the committed local write.
+    # The caller reports both outcomes together; manual sync retains its errors.
+    return sync_github_backup(show_error=False)
+
+
+def show_save_feedback(action, sync_ok):
+    if sync_ok:
+        st.toast(f"✅ {action}；本機已儲存並同步至 GitHub。")
+    else:
+        st.toast(f"⚠️ {action}；本機已儲存，但 GitHub 備份未確認成功，請重試同步。")
 
 
 def member_transaction(operation):
@@ -711,17 +720,17 @@ def manage_members_dialog():
         pos=list(members["id"]).index(mid)
         if c2.button("⬆️",key=f"up_{mid}",disabled=pos==0,use_container_width=True):
             ok,msg=move_member(mid,-1)
-            if ok: save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+            if ok: show_save_feedback("人員排序已更新", save_and_sync()); st.session_state["reopen_members"]=True; st.rerun()
             else: st.error(msg)
         if c3.button("⬇️",key=f"down_{mid}",disabled=pos==len(members)-1,use_container_width=True):
             ok,msg=move_member(mid,1)
-            if ok: save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+            if ok: show_save_feedback("人員排序已更新", save_and_sync()); st.session_state["reopen_members"]=True; st.rerun()
             else: st.error(msg)
         with c4.popover("✏️"):
             nn=st.text_input("姓名",value=name,key=f"rename_{mid}")
             if st.button("儲存",key=f"rename_save_{mid}",use_container_width=True):
                 ok,msg=rename_member(mid,nn)
-                if ok: save_and_sync(); st.toast("✅ 姓名已修改"); st.session_state["reopen_members"]=True; st.rerun()
+                if ok: show_save_feedback("姓名已修改", save_and_sync()); st.session_state["reopen_members"]=True; st.rerun()
                 else: st.error(msg)
             st.divider()
             if st.button("🗑️ 刪除這位人員",key=f"delete_member_{mid}",use_container_width=True):
@@ -738,8 +747,7 @@ def manage_members_dialog():
                         ok,msg=delete_member(mid)
                         if ok:
                             st.session_state.pop(f"confirm_delete_member_{mid}",None)
-                            save_and_sync()
-                            st.toast(f"🗑️ 已刪除：{msg}")
+                            show_save_feedback(f"已刪除人員：{msg}", save_and_sync())
                             st.session_state["reopen_members"]=True
                             st.rerun()
                         else:
@@ -748,7 +756,7 @@ def manage_members_dialog():
     nm=st.text_input("新增人員",key="new_member_name")
     if st.button("➕ 新增人員",use_container_width=True,type="primary"):
         ok,msg=add_member(nm)
-        if ok: save_and_sync(); st.toast(f"✅ 已新增：{nm.strip()}"); st.session_state["reopen_members"]=True; st.rerun()
+        if ok: show_save_feedback(f"已新增人員：{nm.strip()}", save_and_sync()); st.session_state["reopen_members"]=True; st.rerun()
         else: st.error(msg)
     if st.button("✖️ 完成管理／關閉",key="close_members",use_container_width=True):
         st.session_state["reopen_members"]=False; st.rerun()
@@ -794,7 +802,7 @@ def manage_options_dialog():
             else:
                 # 客製需求是 multi-select，沒有預設值。
                 set_options(cat,values,None)
-            save_and_sync()
+            sync_ok=save_and_sync()
 
             # 選項／預設值已寫入 SQLite；清除目前點餐畫面殘留的
             # widget state，讓返回主畫面時重新採用最新 DB 預設值。
@@ -805,7 +813,7 @@ def manage_options_dialog():
             for widget_key in option_widget_keys:
                 st.session_state.pop(widget_key, None)
 
-            st.toast(f"✅ {label}已更新")
+            show_save_feedback(f"{label}已更新", sync_ok)
             st.session_state["reopen_options"]=True
             st.rerun()
     if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True):
@@ -1355,9 +1363,9 @@ def _pay_logic_grouped(cat, df, k, order_view):
                         token=st.session_state.pop(token_key,None)
                         affected = execute_order_action("payment",token)
                         if token is not None and affected == len(token["rows"]):
-                            save_and_sync()
+                            sync_ok=save_and_sync()
                             confirmed_total=sum(row[4] for row in token["rows"])
-                            st.toast(f"💰 已完成收款：{name} (${confirmed_total})")
+                            show_save_feedback(f"已完成收款：{name} (${confirmed_total})", sync_ok)
                             st.rerun()
                         else:
                             st.error("⚠️ 收款狀態未完整更新，請重新整理後確認。")
@@ -1403,8 +1411,7 @@ def _pay_logic_grouped(cat, df, k, order_view):
                         token=st.session_state.pop(token_key,None)
                         affected = execute_order_action("undo_payment",token)
                         if token is not None and affected == len(token["rows"]):
-                            save_and_sync()
-                            st.toast(f"↩️ 已撤銷收款：{name}")
+                            show_save_feedback(f"已撤銷收款：{name}", save_and_sync())
                             st.rerun()
                         else:
                             st.error("⚠️ 收款狀態未完整更新，請重新整理後確認。")
@@ -1806,7 +1813,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             })
 
             if affected == 1:
-                save_and_sync()
+                sync_ok=save_and_sync()
                 for _prefix in (
                     "edit_m_size_", "edit_m_spicy_", "edit_m_tags_",
                     "edit_m_manual_", "edit_d_size_", "edit_d_sugar_",
@@ -1820,7 +1827,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
                 for field in ("item","price","qty"):
                     st.session_state.pop(f"edit_{field}_{edit_key}",None)
-                st.toast("✅ 餐點已成功更新！")
+                show_save_feedback("餐點已更新", sync_ok)
                 st.rerun()
             elif affected in (0,None):
                 st.error(
@@ -1904,8 +1911,7 @@ def render_my_orders(user_name):
                                      on_click=remember_order_token,args=(token_key,backup_guard.order_token(order_view,[row['id']]))):
                             # SQL 再次檢查 is_paid，避免畫面舊資料造成誤刪。
                             if execute_order_action("delete",st.session_state.pop(token_key,None)):
-                                save_and_sync()
-                                st.toast("✅ 已刪除")
+                                show_save_feedback("訂單已刪除", save_and_sync())
                                 st.rerun()
 
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
@@ -2066,13 +2072,13 @@ with tab1:
                             taiwan_now().strftime('%Y-%m-%d %H:%M'), int(m_price_unit)
                         )
                     ):
-                        save_and_sync()
+                        sync_ok=save_and_sync()
                         # 新增成功後只清除「客製化」內容。
                         # 尺寸、辣度都屬於目前點餐介面的選擇，保留使用者剛才的設定，
                         # 與飲料尺寸/甜度/冰塊的操作方式一致。
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
-                        st.toast(f"✅ 已加入：{m_name} ×{m_qty}"); st.rerun()
+                        show_save_feedback(f"已加入主餐：{m_name} ×{m_qty}", sync_ok); st.rerun()
                 else: st.toast("⚠️ 請輸入餐點名稱")
 
     with c_drink:
@@ -2175,9 +2181,9 @@ with tab1:
                             taiwan_now().strftime('%Y-%m-%d %H:%M'), int(d_price_unit)
                         )
                     ):
-                        save_and_sync()
+                        sync_ok=save_and_sync()
                         # 只清除剛剛送出的飲料客製化，不影響尚未送出的主餐設定。
                         st.session_state["d_custom_tags"] = []
                         st.session_state["d_custom_manual"] = ""
-                        st.toast(f"✅ 已加入：{d_name} ×{d_qty}"); st.rerun()
+                        show_save_feedback(f"已加入飲料：{d_name} ×{d_qty}", sync_ok); st.rerun()
                 else: st.toast("⚠️ 請輸入飲料名稱")
