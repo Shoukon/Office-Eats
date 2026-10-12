@@ -126,9 +126,9 @@ class MemberRenameAcceptance(unittest.TestCase):
             self.ui.text_values['姓名'] = '測試改名'
             def rerun(): raise RerunSignal()
             self.ui.rerun = rerun
-            ui_env = load_app_functions(['manage_members_dialog'], **self.env,
+            ui_env = load_app_functions(['manage_members_dialog','show_save_feedback'], **self.env,
                 get_members=lambda: pd.DataFrame(self.guard.export()['members']),
-                save_and_sync=lambda: synced.append(True))
+                save_and_sync=lambda: synced.append(True) or True)
             if fail:
                 ui_env['manage_members_dialog']()
                 self.assertEqual(synced, []); self.assertEqual(self.ui.toasts, [])
@@ -137,7 +137,7 @@ class MemberRenameAcceptance(unittest.TestCase):
             else:
                 with self.assertRaises(RerunSignal): ui_env['manage_members_dialog']()
                 self.assertEqual(synced, [True])
-                self.assertEqual(self.ui.toasts, ['✅ 姓名已修改'])
+                self.assertEqual(self.ui.toasts, ['✅ 姓名已修改；本機已儲存並同步至 GitHub。'])
                 self.assertEqual(self.guard.export()['orders'][0]['name'], '測試改名')
 
 

@@ -498,13 +498,136 @@ elif st.session_state.get('_test_dialog_visible', False):
         self.assertEqual(app.session_state['d_custom_tags'],[])
 
 
+class SaveSyncFeedbackTests(IsolatedTest):
+    def setUp(self):
+        super().setUp()
+        self.remote=self.ready()
+        self.ui=FakeUI(); self.synced=[]
+        harness=OrderUIIntegrationTests(); harness.guard=self.guard
+        self.env=harness.env(self.ui,self.synced)
+        self.env.update(load_app_functions(['sync_github_backup','current_backup_result','create_member_order'],
+            **self.env, github_is_configured=lambda:True,
+            github_get_backup=self.remote.get,github_put_backup=self.remote.put))
+
+    def check_feedback(self, synced):
+        self.assertEqual(len(self.ui.toasts),1)
+        message=self.ui.toasts[0]
+        self.assertIn('本機已儲存',message)
+        self.assertEqual(message.startswith('✅'),synced)
+        self.assertEqual('請重試同步' in message,not synced)
+        self.assertEqual(self.ui.errors,[])
+
+    def test_meal_and_drink_creation_distinguish_confirmed_and_failed_sync(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        cases=[n for n in ast.walk(tree) if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Call) and isinstance(n.test.func,ast.Name)
+            and n.test.func.id=='create_member_order']
+        view=self.guard.member_snapshot()
+        member={'member_id':view['rows'][0][0],'name':view['rows'][0][1],'generation':view['generation']}
+        self.ui.session_state['member_token']=member
+        for node in cases:
+            category=node.test.args[1].elts[0].value
+            for failure in (False,True):
+                with self.subTest(category=category,failure=failure):
+                    self.remote.fail_get=failure; self.ui.toasts.clear(); self.ui.errors.clear()
+                    before=len(self.snapshot()['orders'])
+                    scope=dict(self.env,m_name='Fake meal',d_name='Fake drink',total_p=100,
+                        cust='fake custom',final_cust='L/無糖/去冰',m_qty=1,d_qty=1,
+                        m_price_unit=100,d_price_unit=100,
+                        taiwan_now=lambda:SimpleNamespace(strftime=lambda _:NOW))
+                    exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),scope)
+                    self.assertEqual(len(self.snapshot()['orders']),before+1)
+                    self.check_feedback(not failure)
+
+    def test_failed_creation_does_not_sync_or_show_success(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Call) and isinstance(n.test.func,ast.Name)
+            and n.test.func.id=='create_member_order')
+        before=self.snapshot(); scope=dict(self.env,total_p=100,m_name='Fake',m_qty=1,
+            cust='',m_price_unit=100,taiwan_now=lambda:SimpleNamespace(strftime=lambda _:NOW))
+        exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),scope)
+        self.assertEqual(self.snapshot(),before)
+        self.assertTrue(self.ui.errors); self.assertEqual(self.ui.toasts,[])
+        self.assertEqual(self.remote.put_calls,0)
+
+    def test_edit_and_delete_saved_locally_despite_sync_failure(self):
+        self.remote.fail_get=True
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        self.ui.clicked.add('💾 儲存修改'); self.ui.text_values['餐點名稱']='Fake edit'
+        self.env['edit_order_dialog'](1,'主餐','測試便當',100,1,'',token)
+        self.assertEqual(self.snapshot()['orders'][0]['item_name'],'Fake edit')
+        self.check_feedback(False)
+        self.ui.clicked.clear(); self.ui.toasts.clear()
+        self.env['render_my_orders']('測試甲')
+        registered=next(kw for label,kw in self.ui.buttons if label=='⭕ 確認')
+        registered['on_click'](*registered['args'])
+        self.ui.clicked.add('⭕ 確認')
+        self.env['render_my_orders']('測試甲')
+        self.assertEqual(self.snapshot()['orders'],[]); self.check_feedback(False)
+
+    def test_payment_and_undo_saved_locally_despite_sync_failure(self):
+        self.remote.fail_get=True
+        for button,paid in [('確認收款',1),('撤銷收款',0)]:
+            self.ui.clicked.clear(); self.ui.toasts.clear(); self.ui.buttons.clear()
+            view=self.guard.order_snapshot(); frame=pd.DataFrame(view['rows'],columns=ORDER_FIELDS)
+            self.env['_pay_logic_grouped']('主餐',frame,'main',view)
+            registered=next(kw for label,kw in self.ui.buttons if label==button)
+            registered['on_click'](*registered['args']); self.ui.clicked.add(button)
+            self.env['_pay_logic_grouped']('主餐',frame,'main',view)
+            self.assertEqual(self.snapshot()['orders'][0]['is_paid'],paid)
+            self.check_feedback(False)
+
+    def test_ambiguous_put_reports_pending_without_losing_local_write(self):
+        self.remote.mode='lost_response_get_fail'
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        self.ui.clicked.add('💾 儲存修改'); self.ui.text_values['餐點名稱']='Fake saved'
+        self.env['edit_order_dialog'](1,'主餐','測試便當',100,1,'',token)
+        self.assertEqual(self.snapshot()['orders'][0]['item_name'],'Fake saved')
+        self.assertTrue(self.guard.load_state()['attempt'])
+        self.check_feedback(False)
+
+    def test_save_contract_suppresses_generic_sync_error(self):
+        flags=[]
+        scope=load_app_functions(['save_and_sync','show_save_feedback'],st=self.ui,
+            sync_github_backup=lambda show_error=False:flags.append(show_error) or False)
+        self.assertIs(scope['save_and_sync'](),False)
+        scope['show_save_feedback']('訂單已儲存',False)
+        self.assertEqual(flags,[False]); self.check_feedback(False)
+
+    def test_unconfigured_backup_keeps_local_edit_and_reports_retry(self):
+        self.env['sync_github_backup'].__globals__['github_is_configured']=lambda:False
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        self.ui.clicked.add('💾 儲存修改'); self.ui.text_values['餐點名稱']='Fake local only'
+        self.env['edit_order_dialog'](1,'主餐','測試便當',100,1,'',token)
+        self.assertEqual(self.snapshot()['orders'][0]['item_name'],'Fake local only')
+        self.assertEqual(self.remote.put_calls,0); self.check_feedback(False)
+
+    def test_member_management_reports_local_success_when_backup_fails(self):
+        self.remote.fail_get=True
+        self.env.update(load_app_functions(['member_transaction','add_member','delete_member',
+            'rename_member','move_member','manage_members_dialog'], **self.env,
+            db_connect=self.guard.connect,
+            get_members=lambda:pd.DataFrame(self.snapshot()['members'])))
+        for key,label in [(None,'新增'),('up_2','排序'),('rename_save_1','姓名'),('confirm_delete_2','刪除')]:
+            self.ui.toasts.clear(); self.ui.errors.clear()
+            self.ui.text_values.update({'新增人員':'Fake new','姓名':'Fake renamed'})
+            self.ui.session_state['confirm_delete_member_2']=True
+            self.ui.button=lambda text,**kw:(text=='➕ 新增人員' if key is None else kw.get('key')==key)
+            self.env['manage_members_dialog']()
+            self.check_feedback(False); self.assertIn(label,self.ui.toasts[0])
+        members=self.snapshot()['members']
+        self.assertEqual(len(members),1); self.assertEqual(members[0]['name'],'Fake renamed')
+        self.assertEqual(self.snapshot()['orders'][0]['name'],'Fake renamed')
+
+
 class OrderUIIntegrationTests(IsolatedTest):
     def env(self, ui, synced):
         import html
-        names = ["remember_order_token", "execute_order_action", "edit_order_dialog", "render_my_orders", "render_payment_section", "_pay_logic_grouped", "clear_orders_dialog"]
+        names = ["remember_order_token", "execute_order_action", "edit_order_dialog", "render_my_orders", "render_payment_section", "_pay_logic_grouped", "clear_orders_dialog", "save_and_sync", "show_save_feedback"]
         return load_app_functions(names, st=ui, backup_guard=self.guard, pd=pd, html=html,
                                   ORDER_COLUMNS=list(ORDER_FIELDS), OrderConflict=OrderConflict,
-                                  save_and_sync=lambda: synced.append(True),
+                                  sync_github_backup=lambda show_error=False: synced.append(True) or True,
                                   main_size_options=["無"], spicy_levels=["無"], custom_tags_main=[],
                                   drink_size_options=["M", "L"], sugar_levels=["無糖"], ice_levels=["去冰"], custom_tags_drink=[],
                                   get_options=lambda cat: ["無"] if cat in ("main_size", "spicy") else [],
