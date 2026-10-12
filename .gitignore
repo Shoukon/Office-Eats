@@ -1,0 +1,22 @@
+# Credentials: never include these in source control or release archives.
+streamlit Secrets.txt
+.streamlit/secrets.toml
+*secrets*.toml
+.env
+.env.*
+
+# Live data, encrypted backups, and local safety/recovery state.
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+order_data.json
+*.safety.json
+*.safety.json.*
+*.safety.lock
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.test-tmp/
