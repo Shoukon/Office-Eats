@@ -13,6 +13,7 @@ import html
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from backup_safety import BackupGuard, BackupError, RemoteRejected, SafetyBlocked, OrderConflict, validate_backup, parse_backup
 
 # ==========================================
 # 0. 系統設定區
@@ -135,11 +136,8 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ==========================================
 
 
-# Prevent automatic GitHub sync while restoring a backup into SQLite.
-GITHUB_SYNC_SUPPRESSED = False
-
-def db_connect():
-    return sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
+def db_connect(write=False):
+    return backup_guard.connect(write=write)
 
 
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -152,11 +150,14 @@ def taiwan_now_str():
     return taiwan_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+backup_guard = BackupGuard(DB_FILE, taiwan_now_str)
+
+
 def execute_db(query, params=()):
     for _ in range(5):
         conn=None
         try:
-            conn=db_connect()
+            conn=db_connect(write=True)
             cur=conn.cursor()
             cur.execute(query,params)
             affected=cur.rowcount
@@ -173,13 +174,58 @@ def execute_db(query, params=()):
     return 0
 
 
+def remember_order_token(key, token):
+    # Called BEFORE rerun with the token registered by the displayed widget.
+    # Never replace this intent with a snapshot read after the click/import.
+    st.session_state[key] = token
+
+
+def execute_order_action(action, token, changes=None):
+    for _ in range(5):
+        try:
+            return backup_guard.apply_order_action(action, token, changes)
+        except (OrderConflict, SafetyBlocked, BackupError) as e:
+            st.error(f"⚠️ {e}")
+            return None
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower():
+                raise
+            time.sleep(0.1)
+    st.error("⚠️ 系統忙碌，本次訂單操作未完成，請重新整理後確認。")
+    return None
+
+
+def create_member_order(member_token, values):
+    for _ in range(5):
+        try:
+            return backup_guard.create_order(member_token, values)
+        except (OrderConflict, SafetyBlocked, BackupError) as e:
+            st.error(f"⚠️ {e}")
+            return None
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower():
+                st.error("⚠️ 建單失敗，請重新整理後核對資料。")
+                return None
+            time.sleep(0.1)
+        except Exception:
+            st.error("⚠️ 建單未完成，請重新整理後核對資料。")
+            return None
+    st.error("⚠️ 系統忙碌，本次建單未完成，請稍後再試。")
+    return None
+
+
 def get_db(query, params=()):
+    conn=None
     try:
-        with db_connect() as conn:
-            return pd.read_sql_query(query,conn,params=params)
+        conn=db_connect()
+        return pd.read_sql_query(query,conn,params=params)
     except Exception as e:
         st.error(f"⚠️ 資料庫讀取失敗：{e}")
-        return pd.DataFrame()
+        result = pd.DataFrame()
+        result.attrs["db_error"] = True
+        return result
+    finally:
+        if conn is not None: conn.close()
 
 
 def get_admin_password():
@@ -248,43 +294,63 @@ def decrypt_github_backup(text):
         data=json.loads(raw.decode("utf-8"))
     except (InvalidToken,ValueError,UnicodeDecodeError,json.JSONDecodeError) as e:
         raise ValueError("GitHub 備份無法解密：加密金鑰不正確，或備份內容已損壞。") from e
-    if data.get("backup_format")!="office-order-encrypted-v1":
+    if not isinstance(data,dict) or data.get("backup_format")!="office-order-encrypted-v1":
         raise ValueError("GitHub 備份格式不是目前的加密版本。")
-    return data
+    return validate_backup(data)
 
 
 def github_get_backup():
     token,owner,repo,branch,path,_=get_github_settings()
-    if not (token and owner and repo): return None,None
-    url=f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={urllib.parse.quote(branch,safe='')}"
+    if not (token and owner and repo):
+        raise BackupError("尚未設定 GitHub，不能判定遠端備份不存在。")
+    base=f"https://api.github.com/repos/{urllib.parse.quote(owner,safe='')}/{urllib.parse.quote(repo,safe='')}"
+    ref=urllib.parse.quote(branch,safe='')
+    url=f"{base}/contents/{urllib.parse.quote(path,safe='/')}?ref={ref}"
     try:
         result=github_request("GET",url,token)
-        encoded=result.get("content","").replace("\n","")
-        if not encoded.strip(): return None,result.get("sha")
-        text=base64.b64decode(encoded).decode("utf-8")
-        if not text.strip(): return None,result.get("sha")
-        return decrypt_github_backup(text),result.get("sha")
     except urllib.error.HTTPError as e:
-        if e.code==404: return None,None
-        raise
+        if e.code!=404:
+            raise BackupError(f"GitHub 備份讀取失敗（HTTP {e.code}）。") from e
+        # GitHub may conceal inaccessible repositories/files behind a 404.
+        # Verify repository AND Contents read permission on this exact ref.
+        try:
+            github_request("GET",base,token)
+            root=github_request("GET",f"{base}/contents?ref={ref}",token)
+            if not isinstance(root,list) or any(row.get("path")==path for row in root if isinstance(row,dict)):
+                raise BackupError("無法確認備份檔不存在。")
+        except Exception as verification_error:
+            raise BackupError("GitHub 回傳 404，但尚未確認儲存庫／分支／讀取權限，禁止初始化上傳。") from verification_error
+        return None,None
+    if not isinstance(result,dict) or not isinstance(result.get("sha"),str) or not result["sha"]:
+        raise BackupError("GitHub 備份回應缺少有效 SHA。")
+    encoded=result.get("content")
+    if result.get("encoding")!="base64" or not isinstance(encoded,str) or not encoded.strip():
+        raise BackupError("GitHub 備份內容為空或編碼錯誤；不能視為不存在。")
+    try:
+        text=base64.b64decode("".join(encoded.split()),validate=True).decode("utf-8")
+    except (ValueError,UnicodeDecodeError) as e:
+        raise BackupError("GitHub 備份內容損壞。") from e
+    return decrypt_github_backup(text),result["sha"]
 
 
-def github_put_backup(data):
+def github_put_backup(data,sha):
+    # Only BackupGuard supplies a snapshot and SHA while holding the same-file
+    # coordination lock. NEVER refetch a newer SHA for an older snapshot here.
     token,owner,repo,branch,path,_=get_github_settings()
-    if not (token and owner and repo): return False,"尚未設定 GitHub Secrets。"
-    _,sha=github_get_backup()
+    if not (token and owner and repo): raise RemoteRejected("尚未設定 GitHub。")
     encrypted=encrypt_github_backup(data)
     payload={"message":f"Update encrypted order data {taiwan_now_str()}",
              "content":base64.b64encode(encrypted.encode("ascii")).decode("ascii"),
              "branch":branch}
     if sha: payload["sha"]=sha
-    url=f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    url=f"https://api.github.com/repos/{urllib.parse.quote(owner,safe='')}/{urllib.parse.quote(repo,safe='')}/contents/{urllib.parse.quote(path,safe='/')}"
     try:
-        github_request("PUT",url,token,payload); return True,""
+        result=github_request("PUT",url,token,payload)
+        return result.get("content",{}).get("sha")
     except urllib.error.HTTPError as e:
-        body=e.read().decode("utf-8",errors="replace")
-        return False,("GitHub 備份發生版本衝突，請稍後再試。" if e.code==409 else f"GitHub API 錯誤 {e.code}：{body[:300]}")
-    except Exception as e: return False,str(e)
+        if 400<=e.code<500 and e.code!=408:
+            raise RemoteRejected("GitHub 備份版本衝突，未覆寫遠端。" if e.code==409 else f"GitHub 拒絕備份（HTTP {e.code}）。") from e
+        raise  # ambiguous response: caller must reconcile with GET, not retry PUT
 
 
 def get_members():
@@ -314,7 +380,7 @@ def get_default_option(category):
 
 def set_options(category,values,default_value=None):
     values=[str(v).strip() for v in values if str(v).strip()]
-    conn=db_connect()
+    conn=db_connect(write=True)
     try:
         conn.execute("DELETE FROM order_options WHERE category=?",(category,))
         for idx,v in enumerate(values):
@@ -332,6 +398,7 @@ def set_options(category,values,default_value=None):
 
 def get_orders_df():
     df=get_db("SELECT * FROM orders")
+    if df.attrs.get("db_error", False): return df
     if df.empty: return pd.DataFrame(columns=ORDER_COLUMNS)
     for col in ORDER_COLUMNS:
         if col not in df.columns: df[col]=0 if col in ("price","quantity","is_paid","unit_price") else ""
@@ -361,7 +428,7 @@ def get_current_shop_names():
 
 def set_shop_name(cat,name):
     name = str(name).strip()
-    conn = db_connect()
+    conn = db_connect(write=True)
     try:
         conn.execute(
             "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
@@ -404,96 +471,45 @@ def get_order_db_diagnostics():
 
 
 def export_order_data():
-    data={"format":"office-order-backup","version":"4.1","exported_at":taiwan_now_str(),
-          "members":[],"options":{},"config_shop":[],"orders":[]}
-    with db_connect() as conn:
-        conn.row_factory=sqlite3.Row
-        data["members"]=[dict(r) for r in conn.execute("SELECT id,name,sort_order FROM order_members ORDER BY sort_order,id")]
-        for r in conn.execute("SELECT category,option_value,sort_order,is_default FROM order_options ORDER BY category,sort_order,id"):
-            data["options"].setdefault(r["category"],[]).append({
-                "value": r["option_value"],
-                "is_default": int(r["is_default"] or 0)
-            })
-        data["config_shop"]=[dict(r) for r in conn.execute("SELECT category,shop_name FROM config_shop ORDER BY category")]
-        data["orders"]=[dict(r) for r in conn.execute("SELECT id,name,category,item_name,price,custom,quantity,order_time,is_paid,unit_price FROM orders ORDER BY id")]
-    return data
+    return backup_guard.export()
 
 
-def import_order_data(data):
-    if not isinstance(data,dict) or data.get("format") not in ("office-order-backup",None):
-        raise ValueError("這不是有效的點餐系統備份檔。")
-    if not isinstance(data.get("members",[]),list) or not isinstance(data.get("orders",[]),list):
-        raise ValueError("備份資料結構錯誤。")
-    conn=db_connect()
-    try:
-        cur=conn.cursor(); cur.execute("BEGIN")
-        for table in ("orders","order_members","order_options","config_shop"): cur.execute(f"DELETE FROM {table}")
-        for idx,m in enumerate(data.get("members",[])):
-            name=str(m.get("name","")).strip()
-            if name: cur.execute("INSERT INTO order_members(name,sort_order) VALUES(?,?)",(name,int(m.get("sort_order",idx))))
-        for cat,vals in data.get("options",{}).items():
-            if isinstance(vals,list):
-                for idx,v in enumerate(vals):
-                    if isinstance(v,dict):
-                        value=str(v.get("value","")).strip()
-                        is_default=int(v.get("is_default",0) or 0)
-                    else:
-                        value=str(v).strip()
-                        is_default=0
-                    if value:
-                        cur.execute(
-                            "INSERT INTO order_options(category,option_value,sort_order,is_default) VALUES(?,?,?,?)",
-                            (cat,value,idx,is_default)
-                        )
-        for s in data.get("config_shop",[]):
-            category = str(s.get("category","")).strip()
-            if category:
-                # 空白店家也是有效資料，必須完整還原；不能因為空白而略過。
-                shop_name = str(s.get("shop_name","")).strip()
-                cur.execute(
-                    "INSERT INTO config_shop(category,shop_name) VALUES(?,?)",
-                    (category, shop_name)
-                )
-        for o in data.get("orders",[]):
-            cur.execute("INSERT INTO orders(id,name,category,item_name,price,custom,quantity,order_time,is_paid,unit_price) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                        (int(o["id"]),str(o["name"]),str(o["category"]),str(o["item_name"]),int(o["price"]),str(o.get("custom","")),
-                         int(o["quantity"]),str(o["order_time"]),int(o.get("is_paid",0)),None if o.get("unit_price") is None else int(o["unit_price"])))
-        conn.commit()
-    except Exception:
-        conn.rollback(); raise
-    finally: conn.close()
+def current_backup_result():
+    status=backup_guard.status()
+    if status["kind"]=="success":
+        return ("success", f"🟢 **本機資料與 GitHub 備份一致**\n\n同步時間：{status['at']}（台灣時間）  \n名單：{status['members']} 人｜訂單：{status['orders']} 筆")
+    return ("error", f"⚠️ {status['message']}")
 
 
 def sync_github_backup(show_error=False):
-    if GITHUB_SYNC_SUPPRESSED or not github_is_configured(): return False
     try:
-        ok,msg=github_put_backup(export_order_data())
-        if ok:
-            st.session_state["github_sync_result"]=("success",f"🟢 **最後一次同步成功**\n\n同步時間：{taiwan_now_str()}（台灣時間）  \n名單：{len(get_members())} 人｜訂單：{len(get_orders_df())} 筆")
-        elif show_error: st.error(f"⚠️ GitHub 備份同步失敗：{msg}")
-        return ok
-    except Exception as e:
-        if show_error: st.error(f"⚠️ GitHub 備份同步失敗：{e}")
-        return False
+        ok=backup_guard.transfer(github_is_configured(),github_get_backup,github_put_backup)
+        st.session_state["github_sync_result"]=current_backup_result()
+    except Exception:
+        ok=False
+        st.session_state["github_sync_result"]=("error", "⚠️ 備份同步未完成；本機資料未因同步失敗而取消，請重新整理後核對／重試。")
+    if not ok and show_error:
+        st.error(st.session_state["github_sync_result"][1])
+    return ok
+
+
+def import_order_data(data):
+    # No pre-import export/compensating restore. The replacement stays
+    # uncommitted until remote confirmation; failed import rolls back in-place.
+    ok=backup_guard.transfer(github_is_configured(),github_get_backup,github_put_backup,imported=data)
+    st.session_state["github_sync_result"]=current_backup_result()
+    if not ok:
+        raise BackupError(st.session_state["github_sync_result"][1])
+    return True
 
 
 def restore_from_github_if_new_db(is_new_db):
-    if not is_new_db or not github_is_configured(): return False
-    global GITHUB_SYNC_SUPPRESSED
-    try:
-        backup,_=github_get_backup()
-        if not backup: return False
-        GITHUB_SYNC_SUPPRESSED=True
-        import_order_data(backup)
-        return True
-    except Exception as e:
-        st.warning(f"⚠️ 找到 GitHub 備份，但自動還原失敗：{e}")
-        return False
-    finally: GITHUB_SYNC_SUPPRESSED=False
+    # The durable sidecar, not only the presence of tables, decides retry state.
+    return backup_guard.startup(github_is_configured(),github_get_backup)
 
 
-def init_db():
-    conn=db_connect(); cur=conn.cursor()
+def _init_schema(conn):
+    cur=conn.cursor()
     existing={r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('orders','config_shop','order_members','order_options')")}
     is_new_db=not existing
     cur.execute("""CREATE TABLE IF NOT EXISTS orders(
@@ -514,12 +530,26 @@ def init_db():
     cols_opt={r[1] for r in cur.execute("PRAGMA table_info(order_options)")}
     if "is_default" not in cols_opt:
         cur.execute("ALTER TABLE order_options ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0")
-    conn.commit(); conn.close()
     return is_new_db
 
 
-is_new_db=init_db()
-restored_from_github=restore_from_github_if_new_db(is_new_db)
+def init_db():
+    return backup_guard.prepare(_init_schema)
+
+
+try:
+    is_new_db=init_db()
+    restore_result=restore_from_github_if_new_db(is_new_db)
+except Exception:
+    st.error("⚠️ 資料保護初始化未完成；請保留資料庫與安全狀態檔，未自動上傳或替換資料。")
+    if st.button("🔄 重試資料保護初始化",key="retry_safety_init"):
+        st.rerun()
+    st.stop()
+if restore_result in ("failed","uncertain","adoption_failed","adoption_conflict"):
+    st.error(backup_guard.load_state()["sync"]["message"])
+    if st.button("🔄 重試還原／核對備份",key="retry_backup_restore"):
+        st.rerun()
+    st.stop()
 
 def ensure_single_select_defaults():
     bootstrap={
@@ -540,7 +570,7 @@ def ensure_single_select_defaults():
                 set_options(cat,vals,vals[0])
 
 ensure_single_select_defaults()
-if is_new_db and not restored_from_github and github_is_configured():
+if restore_result=="missing" and github_is_configured():
     sync_github_backup(False)
 
 colleagues_list=get_members()["name"].astype(str).tolist()
@@ -569,44 +599,106 @@ def save_and_sync():
     return sync_github_backup(show_error=True)
 
 
+def member_transaction(operation):
+    """Run one member-management intent under the existing shared write lock."""
+    for attempt in range(5):
+        conn=None
+        try:
+            conn=db_connect(write=True)
+            result=operation(conn)
+            if result[0]: conn.commit()
+            else: conn.rollback()
+            return result
+        except Exception as e:
+            if conn is not None:
+                try: conn.rollback()
+                except Exception:
+                    return False,"交易回滾未能確認，請重新整理後核對人員資料。"
+            if not isinstance(e,sqlite3.OperationalError) or "locked" not in str(e).lower():
+                return False,"人員操作失敗，請重新整理後核對資料並重試。"
+        finally:
+            if conn is not None: conn.close()
+        if attempt<4: time.sleep(0.1)
+    return False,"系統忙碌，本次人員操作未完成，請稍後再試。"
+
+
 def add_member(name):
     name=str(name).strip()
     if not name: return False,"姓名不能為空。"
-    if not get_db("SELECT 1 FROM order_members WHERE name=?",(name,)).empty: return False,"這個姓名已存在。"
-    mx=get_db("SELECT COALESCE(MAX(sort_order),-1) AS n FROM order_members")
-    execute_db("INSERT INTO order_members(name,sort_order) VALUES(?,?)",(name,int(mx.iloc[0]["n"])+1))
-    return True,""
+    def insert(conn):
+        if conn.execute("SELECT 1 FROM order_members WHERE name=?",(name,)).fetchone():
+            return False,"這個姓名已存在。"
+        mx=conn.execute("SELECT COALESCE(MAX(sort_order),-1) FROM order_members").fetchone()[0]
+        if conn.execute("INSERT INTO order_members(name,sort_order) VALUES(?,?)",(name,int(mx)+1)).rowcount!=1:
+            raise sqlite3.IntegrityError("member insert did not affect one row")
+        return True,""
+    return member_transaction(insert)
 
 
 def rename_member(member_id,name):
     name=str(name).strip()
-    current=get_db("SELECT name FROM order_members WHERE id=?",(member_id,))
-    if current.empty: return False,"找不到這位人員。"
-    if not name: return False,"姓名不能為空。"
-    if not get_db("SELECT 1 FROM order_members WHERE name=? AND id<>?",(name,member_id)).empty: return False,"這個姓名已存在。"
-    old=str(current.iloc[0]["name"])
-    execute_db("UPDATE order_members SET name=? WHERE id=?",(name,member_id))
-    execute_db("UPDATE orders SET name=? WHERE name=?",(name,old))
-    return True,""
+    for attempt in range(5):
+        conn=None
+        try:
+            # BackupGuard begins IMMEDIATE and holds its same-file lock until
+            # close. Validate and update both tables within that ONE transaction.
+            conn=db_connect(write=True)
+            current=conn.execute("SELECT name FROM order_members WHERE id=?",(member_id,)).fetchone()
+            if current is None: return False,"找不到這位人員。"
+            if not name: return False,"姓名不能為空。"
+            if conn.execute("SELECT 1 FROM order_members WHERE name=? AND id<>?",(name,member_id)).fetchone():
+                return False,"這個姓名已存在。"
+            old=str(current[0])
+            updated=conn.execute("UPDATE order_members SET name=? WHERE id=?",(name,member_id))
+            if updated.rowcount!=1:
+                raise sqlite3.IntegrityError("member update did not affect one row")
+            # No orders is legal: never require a positive rowcount here.
+            conn.execute("UPDATE orders SET name=? WHERE name=?",(name,old))
+            conn.commit()
+            return True,""
+        except Exception as e:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    return False,"改名失敗，交易回滾未能確認；請重新整理後核對資料。"
+            if not isinstance(e,sqlite3.OperationalError) or "locked" not in str(e).lower():
+                return False,"改名失敗，請重新整理後核對資料並重試。"
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    return False,"改名連線關閉失敗；請重新整理後核對資料。"
+        if attempt<4:
+            time.sleep(0.1)
+    return False,"系統忙碌，本次改名未完成，請稍後再試。"
 
 
 def delete_member(member_id):
-    current=get_db("SELECT name FROM order_members WHERE id=?",(member_id,))
-    if current.empty:
-        return False,"找不到這位人員。"
-    name=str(current.iloc[0]["name"])
-    execute_db("DELETE FROM order_members WHERE id=?",(member_id,))
-    return True,name
+    def delete(conn):
+        current=conn.execute("SELECT name FROM order_members WHERE id=?",(member_id,)).fetchone()
+        if current is None: return False,"找不到這位人員。"
+        if conn.execute("DELETE FROM order_members WHERE id=?",(member_id,)).rowcount!=1:
+            raise sqlite3.IntegrityError("member delete did not affect one row")
+        return True,str(current[0])
+    return member_transaction(delete)
 
 
 def move_member(member_id,direction):
-    members=get_members(); ids=members["id"].astype(int).tolist()
-    if int(member_id) not in ids: return
-    idx=ids.index(int(member_id)); target=idx+direction
-    if target<0 or target>=len(ids): return
-    a,b=members.iloc[idx],members.iloc[target]
-    execute_db("UPDATE order_members SET sort_order=? WHERE id=?",(int(b["sort_order"]),int(a["id"])))
-    execute_db("UPDATE order_members SET sort_order=? WHERE id=?",(int(a["sort_order"]),int(b["id"])))
+    def swap(conn):
+        members=conn.execute("SELECT id,sort_order FROM order_members ORDER BY sort_order,id").fetchall()
+        ids=[row[0] for row in members]
+        if int(member_id) not in ids: return False,"找不到這位人員。"
+        if direction not in (-1,1): return False,"排序方向無效。"
+        idx=ids.index(int(member_id)); target=idx+direction
+        if target<0 or target>=len(ids): return True,""  # legal no-op
+        a,b=members[idx],members[target]
+        for mid,position in ((a[0],b[1]),(b[0],a[1])):
+            if conn.execute("UPDATE order_members SET sort_order=? WHERE id=?",(position,mid)).rowcount!=1:
+                raise sqlite3.IntegrityError("member swap did not affect one row")
+        return True,""
+    return member_transaction(swap)
 
 @st.dialog("👥 管理點餐人員",width="large")
 def manage_members_dialog():
@@ -618,9 +710,13 @@ def manage_members_dialog():
         c1.write(f"👤 {name}")
         pos=list(members["id"]).index(mid)
         if c2.button("⬆️",key=f"up_{mid}",disabled=pos==0,use_container_width=True):
-            move_member(mid,-1); save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+            ok,msg=move_member(mid,-1)
+            if ok: save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+            else: st.error(msg)
         if c3.button("⬇️",key=f"down_{mid}",disabled=pos==len(members)-1,use_container_width=True):
-            move_member(mid,1); save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+            ok,msg=move_member(mid,1)
+            if ok: save_and_sync(); st.session_state["reopen_members"]=True; st.rerun()
+            else: st.error(msg)
         with c4.popover("✏️"):
             nn=st.text_input("姓名",value=name,key=f"rename_{mid}")
             if st.button("儲存",key=f"rename_save_{mid}",use_container_width=True):
@@ -717,19 +813,21 @@ def manage_options_dialog():
         st.rerun()
 
 @st.dialog("⚠️ 確認清空全部訂單")
-def clear_orders_dialog():
+def clear_orders_dialog(order_token):
     st.warning("確定要清空目前全部訂單嗎？此動作無法復原。")
     c1,c2=st.columns(2)
     with c1:
         if st.button("❌ 取消",key="clear_orders_cancel",use_container_width=True):
             st.rerun()
     with c2:
-        if st.button("🗑️ 確定清除",key="clear_orders_confirm",use_container_width=True):
-            execute_db("DELETE FROM orders")
+        generation=order_token.get("generation","missing") if isinstance(order_token,dict) else "missing"
+        if st.button("🗑️ 確定清除",key=f"clear_orders_confirm_{generation}",use_container_width=True):
+            if execute_order_action("clear",order_token) is None:
+                return
             if sync_github_backup(False):
                 st.toast("🗑️ 全部訂單已清除，GitHub 備份也已更新。")
             else:
-                st.toast("🗑️ 全部訂單已清除。")
+                st.toast("🗑️ 本機訂單已清除，但 GitHub 備份未確認成功，請重試同步。")
             st.rerun()
 
 
@@ -741,7 +839,7 @@ with st.sidebar:
     new_drink_shop=st.text_input("飲料店家",value=db_drink_shop, key="shop_drink_input").strip()
 
     if st.button("💾 儲存今日店家", key="save_shop_names", use_container_width=True):
-        conn=db_connect()
+        conn=db_connect(write=True)
         try:
             conn.execute(
                 "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
@@ -773,8 +871,10 @@ with st.sidebar:
             conn.close()
 
     st.divider(); st.subheader("🗑️ 資料管理")
-    if st.button("🗑️ 清空全部訂單",use_container_width=True):
-        clear_orders_dialog()
+    clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
+    if st.button("🗑️ 清空全部訂單",use_container_width=True,
+                 on_click=remember_order_token,args=("clear_order_token",clear_token)):
+        clear_orders_dialog(st.session_state.pop("clear_order_token",None))
 
     st.divider(); st.subheader("🔐 管理員")
     if not st.session_state.admin_logged_in:
@@ -794,7 +894,12 @@ with st.sidebar:
         if st.button("🔒 管理員登出",use_container_width=True): st.session_state.admin_logged_in=False; st.rerun()
 
         st.divider(); st.subheader("☁️ GitHub 永久資料")
-        result=st.session_state.get("github_sync_result")
+        result=current_backup_result()
+        # A failed current-session attempt (e.g. lock timeout) must not be
+        # concealed by a previous successful shared backup status.
+        session_result=st.session_state.get("github_sync_result")
+        if session_result and session_result[0]=="error":
+            result=session_result
         if result:
             kind,msg=result
             if kind == "success":
@@ -824,20 +929,16 @@ with st.sidebar:
         if uploaded is not None:
             st.warning("⚠️ 匯入會取代目前的人員、客製選項、店家與所有訂單。")
             if st.button("✅ 確定匯入此備份",key="confirm_order_import",use_container_width=True):
-                original=export_order_data()
                 try:
-                    imported=json.loads(uploaded.getvalue().decode("utf-8"))
-                    global_flag=GITHUB_SYNC_SUPPRESSED
-                    GITHUB_SYNC_SUPPRESSED=True
-                    try: import_order_data(imported)
-                    finally: GITHUB_SYNC_SUPPRESSED=global_flag
-                    if not sync_github_backup(False): raise RuntimeError("GitHub 備份同步失敗，匯入已取消。")
-                    st.session_state.pop("order_backup_upload",None); st.toast("✅ 點餐資料匯入成功！"); st.rerun()
-                except Exception as e:
-                    try:
-                        GITHUB_SYNC_SUPPRESSED=True; import_order_data(original)
-                    finally: GITHUB_SYNC_SUPPRESSED=global_flag
+                    imported=parse_backup(uploaded.getvalue())
+                    import_order_data(imported)
+                    st.session_state.pop("order_backup_upload",None)
+                    st.toast("✅ 點餐資料匯入成功，GitHub 備份已確認！")
+                    st.rerun()
+                except (BackupError,SafetyBlocked) as e:
                     st.error(f"❌ 匯入未完成：{e}")
+                except Exception:
+                    st.error("❌ 匯入未完成；請保留原資料及安全狀態檔，重新整理後核對備份狀態。")
 
         st.divider(); st.subheader("🗄️ 資料庫資訊")
         diag = get_order_db_diagnostics()
@@ -860,6 +961,10 @@ with st.sidebar:
 # ==========================================
 @st.fragment(run_every="10s")
 def render_stats_section():
+    df_all = get_orders_df()
+    if df_all.attrs.get("db_error", False):
+        st.error("⚠️ 暫時無法讀取訂單資料，請稍後重新整理。")
+        return
     c_ref_text, c_ref_btn = st.columns([8, 1], vertical_alignment="center")
     with c_ref_text:
         # 字體微調為 0.95rem
@@ -870,10 +975,6 @@ def render_stats_section():
     shop_names = get_current_shop_names()
     r_name = shop_names["main"]
     d_name = shop_names["drink"]
-    df_all = get_orders_df()
-    if df_all.attrs.get("db_error", False):
-        st.error("⚠️ 暫時無法讀取訂單資料，請稍後重新整理。")
-        return
     if df_all.empty:
         st.info("📦 目前尚無訂單，等待第一筆資料...")
         return
@@ -1186,7 +1287,12 @@ def render_payment_section():
     with c_ref_btn:
         if st.button("🔄", help="立即重新整理收款資料", use_container_width=True, key="btn_refresh_payment"): st.rerun()
 
-    df_all = get_orders_df()
+    try:
+        order_view = backup_guard.order_snapshot()
+    except (SafetyBlocked,sqlite3.OperationalError):
+        st.error("⚠️ 暫時無法取得可驗證的訂單快照，請稍後重新整理收款資料。")
+        return
+    df_all = pd.DataFrame(order_view["rows"],columns=ORDER_COLUMNS)
     if df_all.empty: st.write("尚無訂單。"); return
     
     shop_names = get_current_shop_names()
@@ -1220,10 +1326,10 @@ def render_payment_section():
     st.write("") 
     
     t1, t2 = st.tabs([f"🍱 主餐訂單（{main_shop}）", f"🥤 飲料訂單（{drink_shop}）"])
-    with t1: _pay_logic_grouped("主餐", df_main, "main")
-    with t2: _pay_logic_grouped("飲料", df_drink, "drink")
+    with t1: _pay_logic_grouped("主餐", df_main, "main", order_view)
+    with t2: _pay_logic_grouped("飲料", df_drink, "drink", order_view)
 
-def _pay_logic_grouped(cat, df, k):
+def _pay_logic_grouped(cat, df, k, order_view):
     if df.empty: st.caption("目前無資料"); return
     unpaid_df = df[df['is_paid'] == 0]
     
@@ -1242,15 +1348,16 @@ def _pay_logic_grouped(cat, df, k):
                                 f'<span style="margin-left:auto; color:#FF4B4B; font-weight:700;">應收: ${total_price}</span>'
                                 f'</div>', unsafe_allow_html=True)
                 with c_btn:
-                    if st.button("確認收款", key=f"pay_{k}_{name}", use_container_width=True, type="primary"):
-                        placeholders = ','.join('?' * len(ids))
-                        affected = execute_db(
-                            f"UPDATE orders SET is_paid = 1 WHERE id IN ({placeholders}) AND is_paid = 0",
-                            tuple(ids)
-                        )
-                        if affected == len(ids):
+                    token_key=f"pay_token_{k}_{name}"
+                    st.caption(f"確認此人全部未付{cat}：{len(group)} 筆，${total_price}")
+                    if st.button("確認收款", key=f"pay_{k}_{name}_{order_view['generation']}", use_container_width=True, type="primary",
+                                 on_click=remember_order_token,args=(token_key,backup_guard.order_token(order_view,ids))):
+                        token=st.session_state.pop(token_key,None)
+                        affected = execute_order_action("payment",token)
+                        if token is not None and affected == len(token["rows"]):
                             save_and_sync()
-                            st.toast(f"💰 已完成收款：{name} (${total_price})")
+                            confirmed_total=sum(row[4] for row in token["rows"])
+                            st.toast(f"💰 已完成收款：{name} (${confirmed_total})")
                             st.rerun()
                         else:
                             st.error("⚠️ 收款狀態未完整更新，請重新整理後確認。")
@@ -1289,13 +1396,13 @@ def _pay_logic_grouped(cat, df, k):
                 c1, c2 = st.columns([4, 1], vertical_alignment="center")
                 with c1: st.write(f"~~{html.escape(str(name))} (${total_price})~~") 
                 with c2:
-                    if st.button("撤銷收款", key=f"undo_{k}_{name}", use_container_width=True):
-                        placeholders = ','.join('?' * len(ids))
-                        affected = execute_db(
-                            f"UPDATE orders SET is_paid = 0 WHERE id IN ({placeholders}) AND is_paid = 1",
-                            tuple(ids)
-                        )
-                        if affected == len(ids):
+                    token_key=f"undo_token_{k}_{name}"
+                    st.caption(f"撤銷此人全部已付{cat}：{len(group)} 筆，${total_price}")
+                    if st.button("撤銷收款", key=f"undo_{k}_{name}_{order_view['generation']}", use_container_width=True,
+                                 on_click=remember_order_token,args=(token_key,backup_guard.order_token(order_view,ids))):
+                        token=st.session_state.pop(token_key,None)
+                        affected = execute_order_action("undo_payment",token)
+                        if token is not None and affected == len(token["rows"]):
                             save_and_sync()
                             st.toast(f"↩️ 已撤銷收款：{name}")
                             st.rerun()
@@ -1308,13 +1415,28 @@ def _pay_logic_grouped(cat, df, k):
 # 主餐尺寸：固定選項。「無」為預設值，儲存時不寫入 custom。
 
 st.title("🍱 點餐哦各位～")
+backup_notice=backup_guard.status()
+if backup_notice["kind"]!="success":
+    st.warning(f"☁️ {backup_notice['message']}")
 tab1, tab2, tab3 = st.tabs(["📝 開始點餐", "📊 餐點統計", "💰 收款管理"])
 
 @st.dialog("👤 請選擇您的姓名")
 def login_dialog():
     st.caption("請選擇您的姓名以開始點餐")
-    selected = st.pills("姓名", colleagues_list, selection_mode="single", label_visibility="collapsed")
+    try:
+        member_view = backup_guard.member_snapshot()
+    except Exception:
+        st.error("⚠️ 無法確認人員身分，請重新整理後再選名。")
+        return
+    selected = st.pills("姓名", [row[1] for row in member_view["rows"]], selection_mode="single", label_visibility="collapsed",
+                       key=f"member_picker_{member_view['generation']}_{member_view['rows']}")
     if selected:
+        matches = [row for row in member_view["rows"] if row[1] == selected]
+        if len(matches) != 1:
+            st.error("⚠️ 人員名單已變更，請重新選擇姓名。")
+            return
+        st.session_state['member_token'] = {"member_id": matches[0][0], "name": matches[0][1],
+                                             "generation": member_view["generation"]}
         st.session_state['user_name'] = selected
         st.rerun()
 
@@ -1351,9 +1473,20 @@ def custom_dialog(key_prefix, tag_options):
         st.rerun()
 
 @st.dialog("✏️ 編輯餐點")
-def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cur_custom):
-    # 防止 Dialog 開啟後，其他人先完成收款而造成付款狀態不一致。
-    current = get_db("SELECT is_paid, unit_price, category FROM orders WHERE id = ?", (order_id,))
+def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cur_custom, order_token):
+    # 保留開啟畫面的代次與原始快照；不能只按目前 ID 重讀後當作同一筆。
+    try:
+        expected = backup_guard.expected_order(order_token)
+        if expected["id"] != order_id:
+            raise OrderConflict("編輯請求與原始訂單不一致，請重新開啟。")
+        current = pd.DataFrame([expected])
+    except (OrderConflict,SafetyBlocked) as e:
+        st.error(f"⚠️ {e}")
+        return
+    except sqlite3.OperationalError:
+        st.error("⚠️ 暫時無法核對訂單，請稍後重新開啟編輯。")
+        return
+    edit_key=f"{order_id}_{order_token['generation']}"
     if current.empty:
         st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
         return
@@ -1373,12 +1506,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
     new_name = st.text_input(
         "餐點名稱" if edit_category == "主餐" else "飲料名稱",
-        value=str(cur_name)
+        value=str(cur_name),key=f"edit_item_{edit_key}"
     ).strip()
 
     c_p, c_q = st.columns(2)
-    new_unit_price = c_p.number_input("單價（元）", min_value=0, step=5, value=unit_price)
-    new_qty = c_q.number_input("數量", min_value=1, step=1, value=int(cur_qty))
+    new_unit_price = c_p.number_input("單價（元）", min_value=0, step=5, value=unit_price,key=f"edit_price_{edit_key}")
+    new_qty = c_q.number_input("數量", min_value=1, step=1, value=int(cur_qty),key=f"edit_qty_{edit_key}")
 
     # ------------------------------------------------------
     # 主餐：與新增主餐相同的辣度 + 客製化快速選項 + 手動輸入
@@ -1418,12 +1551,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         main_tags = recognized_tags
         main_manual = ", ".join(manual_parts)
 
-        # Widget key 使用 order_id，避免不同編輯 Dialog 之間互相污染。
-        spicy_key = f"edit_m_spicy_{order_id}"
-        tags_key = f"edit_m_tags_{order_id}"
-        manual_key = f"edit_m_manual_{order_id}"
+        # Widget key 使用 order_id + 資料代次，避免同 ID 的匯入資料沿用舊草稿。
+        spicy_key = f"edit_m_spicy_{edit_key}"
+        tags_key = f"edit_m_tags_{edit_key}"
+        manual_key = f"edit_m_manual_{edit_key}"
 
-        size_key = f"edit_m_size_{order_id}"
+        size_key = f"edit_m_size_{edit_key}"
 
         if size_key not in st.session_state:
             st.session_state[size_key] = main_size if main_size in main_size_options else get_default_option("main_size")
@@ -1456,7 +1589,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             edit_spicy = None
             st.caption("辣度：目前沒有可選項目")
 
-        tags_widget_key = f"edit_m_tags_widget_{order_id}"
+        tags_widget_key = f"edit_m_tags_widget_{edit_key}"
         if tags_widget_key not in st.session_state:
             valid_tag_set = {str(v) for v in custom_tags_main}
             st.session_state[tags_widget_key] = [
@@ -1507,92 +1640,45 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
     else:
         raw_custom = str(cur_custom or "").strip()
 
-        drink_size_key = f"edit_d_size_{order_id}"
-        drink_sugar_key = f"edit_d_sugar_{order_id}"
-        drink_ice_key = f"edit_d_ice_{order_id}"
-        drink_tags_key = f"edit_d_tags_{order_id}"
-        drink_manual_key = f"edit_d_manual_{order_id}"
+        drink_size_key = f"edit_d_size_{edit_key}"
+        drink_sugar_key = f"edit_d_sugar_{edit_key}"
+        drink_ice_key = f"edit_d_ice_{edit_key}"
+        drink_tags_key = f"edit_d_tags_{edit_key}"
+        drink_manual_key = f"edit_d_manual_{edit_key}"
 
-        # 先用目前可用選項組成 prefix，從既有 custom 拆出基本飲料設定。
-        available_size_values = drink_size_options
-        parsed_size = get_default_option("drink_size") or (drink_size_options[0] if drink_size_options else None)
-        parsed_sugar = sugar_levels[0] if sugar_levels else None
-        parsed_ice = ice_levels[0] if ice_levels else None
-        remainder = raw_custom
-
-        # custom 的基本格式是：尺寸/甜度/冰塊[, 客製...]
+        # 編輯沿用原值，不把停用選項搬到備註後再添加新預設。
+        # 停用值只加入這筆訂單的選單，不修改全域選項或備份格式。
         base_part, separator, tag_part = raw_custom.partition(",")
-        base_values = [v.strip() for v in base_part.split("/") if v.strip()]
-
-        if base_values:
-            recognized_base_values = []
-            if base_values[0] in available_size_values:
-                parsed_size = base_values[0]
-                recognized_base_values.append(base_values[0])
-            if len(base_values) > 1 and base_values[1] in sugar_levels:
-                parsed_sugar = base_values[1]
-                recognized_base_values.append(base_values[1])
-            if len(base_values) > 2 and base_values[2] in ice_levels:
-                parsed_ice = base_values[2]
-                recognized_base_values.append(base_values[2])
-
-            unknown_base_values = [
-                value for value in base_values
-                if value not in recognized_base_values
-            ]
-            trailing_tags = (
-                [p.strip() for p in tag_part.split(",") if p and p.strip()]
-                if separator else []
-            )
-
-            # 未辨識欄位與原有客製需求都保留，避免編輯後資料遺失。
-            remainder_parts = unknown_base_values + trailing_tags
-            remainder = ", ".join(remainder_parts)
-
-        if drink_size_key not in st.session_state:
-            st.session_state[drink_size_key] = parsed_size
-        if drink_sugar_key not in st.session_state:
-            st.session_state[drink_sugar_key] = parsed_sugar
-        if drink_ice_key not in st.session_state:
-            st.session_state[drink_ice_key] = parsed_ice
-
-        if st.session_state.get(drink_size_key) not in available_size_values:
-            st.session_state[drink_size_key] = get_default_option("drink_size") or available_size_values[0]
-        edit_size = st.pills(
-            "尺寸（必選）",
-            available_size_values,
-            default=get_default_option("drink_size"),
-            key=drink_size_key,
-            selection_mode="single"
-        )
-
-        if sugar_levels:
-            if st.session_state.get(drink_sugar_key) not in sugar_levels:
-                st.session_state[drink_sugar_key] = sugar_levels[0]
-            edit_sugar = st.pills(
-                "甜度",
-                sugar_levels,
-                default=sugar_levels[0],
-                key=drink_sugar_key,
-                selection_mode="single"
-            )
+        base_values = [v.strip() for v in base_part.split("/")]
+        parsed = [None, None, None]
+        if "/" in base_part or base_part.strip() in drink_size_options:
+            parsed = [(base_values[i] or None) if i < len(base_values) else None for i in range(3)]
+            remainder = ", ".join([v for v in base_values[3:] if v] +
+                                  ([tag_part.strip()] if separator and tag_part.strip() else []))
         else:
-            edit_sugar = None
-            st.caption("甜度：目前沒有可選項目")
+            remainder = raw_custom  # 舊純文字客製：保留為手動內容，不猜測基本選項。
 
-        if ice_levels:
-            if st.session_state.get(drink_ice_key) not in ice_levels:
-                st.session_state[drink_ice_key] = ice_levels[0]
-            edit_ice = st.pills(
-                "冰塊",
-                ice_levels,
-                default=ice_levels[0],
-                key=drink_ice_key,
-                selection_mode="single"
-            )
-        else:
-            edit_ice = None
-            st.caption("冰塊：目前沒有可選項目")
+        edit_options = []
+        for label, values, key, original in (
+            ("尺寸", drink_size_options, drink_size_key, parsed[0]),
+            ("甜度", sugar_levels, drink_sugar_key, parsed[1]),
+            ("冰塊", ice_levels, drink_ice_key, parsed[2]),
+        ):
+            options = list(values)
+            if original and original not in options:
+                options.append(original)
+                st.caption(f"{label}原選項「{original}」已停用；未更改時保留原值。")
+            if key not in st.session_state:
+                st.session_state[key] = original
+            if st.session_state.get(key) is not None and st.session_state[key] not in options:
+                st.session_state[key] = original
+            if options:
+                selected = st.pills(label, options, key=key, selection_mode="single")
+            else:
+                selected = None
+                st.caption(f"{label}：目前沒有可選項目")
+            edit_options.append(selected)
+        edit_size, edit_sugar, edit_ice = edit_options
 
         # 從 remainder 恢復快速客製與手動客製。
         valid_drink_tags = {str(v) for v in custom_tags_drink}
@@ -1610,7 +1696,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         if drink_manual_key not in st.session_state:
             st.session_state[drink_manual_key] = ", ".join(manual_parts)
 
-        drink_tags_widget_key = f"edit_d_tags_widget_{order_id}"
+        drink_tags_widget_key = f"edit_d_tags_widget_{edit_key}"
         if drink_tags_widget_key not in st.session_state:
             st.session_state[drink_tags_widget_key] = [
                 str(v) for v in parsed_tags
@@ -1654,7 +1740,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         "💾 儲存修改",
         type="primary",
         use_container_width=True,
-        key=f"save_edit_{order_id}",
+        key=f"save_edit_{edit_key}",
     ):
         # 直接在 Dialog 的本次執行中儲存。
         # 不使用 on_click callback，避免 Dialog callback 中觸發 rerun
@@ -1698,33 +1784,16 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             if save_manual:
                 save_custom += f"{', ' if save_custom else ''}{save_manual}"
 
-        current_check = get_db(
-            "SELECT is_paid FROM orders WHERE id = ?",
-            (order_id,)
-        )
-
-        if current_check.empty:
-            st.error("⚠️ 找不到這筆訂單，可能已被刪除。")
-        elif int(current_check.iloc[0]["is_paid"] or 0) == 1:
-            st.error("🔒 這筆訂單已完成收款，無法修改。")
-        elif edit_category == "主餐" and edit_size not in main_size_options:
+        if edit_category == "主餐" and edit_size not in main_size_options:
             st.error("請選擇餐點尺寸")
         elif not new_name:
             st.error("餐點名稱不能為空")
         else:
             new_total = int(new_unit_price) * int(new_qty)
-            affected = execute_db(
-                "UPDATE orders SET item_name=?, price=?, quantity=?, unit_price=?, custom=? "
-                "WHERE id=? AND is_paid=0",
-                (
-                    new_name,
-                    new_total,
-                    int(new_qty),
-                    int(new_unit_price),
-                    save_custom,
-                    order_id,
-                )
-            )
+            affected = execute_order_action("edit",order_token,{
+                "item_name":new_name,"price":new_total,"quantity":int(new_qty),
+                "unit_price":int(new_unit_price),"custom":save_custom,
+            })
 
             if affected == 1:
                 save_and_sync()
@@ -1733,15 +1802,17 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                     "edit_m_manual_", "edit_d_size_", "edit_d_sugar_",
                     "edit_d_ice_", "edit_d_tags_", "edit_d_manual_",
                 ):
-                    st.session_state.pop(f"{_prefix}{order_id}", None)
-                    st.session_state.pop(f"{_prefix}{order_id}_widget", None)
+                    st.session_state.pop(f"{_prefix}{edit_key}", None)
+                    st.session_state.pop(f"{_prefix}{edit_key}_widget", None)
 
-                st.session_state.pop(f"edit_m_tags_widget_{order_id}", None)
-                st.session_state.pop(f"edit_d_tags_widget_{order_id}", None)
+                st.session_state.pop(f"edit_m_tags_widget_{edit_key}", None)
+                st.session_state.pop(f"edit_d_tags_widget_{edit_key}", None)
 
+                for field in ("item","price","qty"):
+                    st.session_state.pop(f"edit_{field}_{edit_key}",None)
                 st.toast("✅ 餐點已成功更新！")
                 st.rerun()
-            elif affected == 0:
+            elif affected in (0,None):
                 st.error(
                     "⚠️ 餐點沒有更新，可能已完成收款或資料已被其他人修改，"
                     "請重新開啟編輯後再試。"
@@ -1752,7 +1823,12 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
 
 def render_my_orders(user_name):
-    my_orders = get_db("SELECT * FROM orders WHERE name = ?", (user_name,))
+    try:
+        order_view = backup_guard.order_snapshot(user_name)
+    except (SafetyBlocked,sqlite3.OperationalError):
+        st.error("⚠️ 暫時無法取得可驗證的訂單快照，請稍後重新整理。")
+        return
+    my_orders = pd.DataFrame(order_view["rows"],columns=ORDER_COLUMNS)
     my_sum = my_orders['price'].sum() if not my_orders.empty else 0
     with st.expander(f"📋 {html.escape(str(user_name))} 的訂單（合計：${my_sum}）", expanded=True if not my_orders.empty else False):
         if my_orders.empty: st.caption("目前尚無訂單")
@@ -1782,10 +1858,11 @@ def render_my_orders(user_name):
 
                 if c_btn1.button(
                     "🔒" if is_paid else "✏️",
-                    key=f"btn_edit_{row['id']}",
+                    key=f"btn_edit_{row['id']}_{order_view['generation']}",
                     help="已完成收款，無法修改" if is_paid else "修改",
                     use_container_width=True,
-                    disabled=is_paid
+                    disabled=is_paid,
+                    on_click=remember_order_token,args=("clicked_edit_token",backup_guard.order_token(order_view,[row['id']]))
                 ):
                     # 不在 5 秒 fragment 內直接開 Dialog。
                     # 先記住要編輯的訂單，再做一次完整 app rerun，
@@ -1797,6 +1874,7 @@ def render_my_orders(user_name):
                         "price": row["price"],
                         "quantity": row["quantity"],
                         "custom": row["custom"],
+                        "order_token": st.session_state.pop("clicked_edit_token",None),
                     }
                     st.rerun()
 
@@ -1811,9 +1889,11 @@ def render_my_orders(user_name):
                 else:
                     with c_btn2.popover("🗑️", help="刪除", use_container_width=True):
                         st.write(f"刪除 **{safe_item_name}**？")
-                        if st.button("⭕ 確認", key=f"confirm_del_{row['id']}", type="primary", use_container_width=True):
+                        token_key=f"delete_token_{row['id']}"
+                        if st.button("⭕ 確認", key=f"confirm_del_{row['id']}_{order_view['generation']}", type="primary", use_container_width=True,
+                                     on_click=remember_order_token,args=(token_key,backup_guard.order_token(order_view,[row['id']]))):
                             # SQL 再次檢查 is_paid，避免畫面舊資料造成誤刪。
-                            if execute_db("DELETE FROM orders WHERE id = ? AND is_paid = 0", (row['id'],)):
+                            if execute_order_action("delete",st.session_state.pop(token_key,None)):
                                 save_and_sync()
                                 st.toast("✅ 已刪除")
                                 st.rerun()
@@ -1828,6 +1908,7 @@ if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = 
 if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
 
 with tab2: render_stats_section()
+with tab3: render_payment_section()
 
 with tab1:
     if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
@@ -1859,6 +1940,7 @@ with tab1:
             edit_request["price"],
             edit_request["quantity"],
             edit_request["custom"],
+            edit_request.get("order_token"),
         )
 
     current_main_shop = get_shop_name("main")
@@ -1968,12 +2050,10 @@ with tab1:
                     cust = ", ".join(parts) if parts else ""
                     
                     total_p = int(m_price_unit) * int(m_qty)
-                    if execute_db(
-                        "INSERT INTO orders "
-                        "(name, category, item_name, price, custom, quantity, order_time, is_paid, unit_price) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                    if create_member_order(
+                        st.session_state.get("member_token"),
                         (
-                            user_name, "主餐", m_name, total_p, cust, int(m_qty),
+                            "主餐", m_name, total_p, cust, int(m_qty),
                             taiwan_now().strftime('%Y-%m-%d %H:%M'), int(m_price_unit)
                         )
                     ):
@@ -2080,12 +2160,10 @@ with tab1:
                         final_cust += f"{', ' if final_cust else ''}{', '.join(clean_drink_tags)}"
 
                     total_p = int(d_price_unit) * int(d_qty)
-                    if execute_db(
-                        "INSERT INTO orders "
-                        "(name, category, item_name, price, custom, quantity, order_time, is_paid, unit_price) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                    if create_member_order(
+                        st.session_state.get("member_token"),
                         (
-                            user_name, "飲料", d_name, total_p, final_cust, int(d_qty),
+                            "飲料", d_name, total_p, final_cust, int(d_qty),
                             taiwan_now().strftime('%Y-%m-%d %H:%M'), int(d_price_unit)
                         )
                     ):
@@ -2095,5 +2173,3 @@ with tab1:
                         st.session_state["d_custom_manual"] = ""
                         st.toast(f"✅ 已加入：{d_name} ×{d_qty}"); st.rerun()
                 else: st.toast("⚠️ 請輸入飲料名稱")
-
-with tab3: render_payment_section()
