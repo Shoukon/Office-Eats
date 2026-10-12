@@ -1440,6 +1440,18 @@ def login_dialog():
         st.session_state['user_name'] = selected
         st.rerun()
 
+def open_drink_custom_dialog(tag_options):
+    # A new open intent starts from committed values; fragment input reruns
+    # call custom_dialog directly and must not reset the in-progress draft.
+    valid={str(value) for value in tag_options}
+    st.session_state["d_custom_pills_widget"]=[
+        str(value) for value in st.session_state.get("d_custom_tags", [])
+        if value is not None and str(value) in valid
+    ]
+    st.session_state["d_custom_manual_widget"]=st.session_state.get("d_custom_manual", "")
+    custom_dialog("d_custom", tag_options)
+
+
 @st.dialog("🎨 客製需求")
 def custom_dialog(key_prefix, tag_options):
     st.caption("常用客製需求（可複選）")
@@ -1456,7 +1468,7 @@ def custom_dialog(key_prefix, tag_options):
         new_tags = st.pills(
             "客製選項",
             tag_options,
-            default=current_tags,
+            **({} if key_prefix == "d_custom" else {"default": current_tags}),
             selection_mode="multi",
             label_visibility="collapsed",
             key=f"{key_prefix}_pills_widget"
@@ -1466,7 +1478,7 @@ def custom_dialog(key_prefix, tag_options):
         st.caption("目前沒有可用的常用客製需求")
 
     st.markdown("---")
-    new_manual = st.text_input("其他客製需求", value=current_manual, placeholder="例如：不要香菜、加珍珠、醬料另外放", key=f"{key_prefix}_manual_widget").strip()
+    new_manual = st.text_input("其他客製需求", **({} if key_prefix == "d_custom" else {"value": current_manual}), placeholder="例如：不要香菜、加珍珠、醬料另外放", key=f"{key_prefix}_manual_widget").strip()
     if st.button("✅ 完成", use_container_width=True, type="primary"):
         st.session_state[f"{key_prefix}_tags"] = new_tags
         st.session_state[f"{key_prefix}_manual"] = new_manual
@@ -2122,7 +2134,7 @@ with tab1:
             dc_btn, dc_clear = st.columns([4, 1])
             with dc_btn:
                 if st.button(d_btn_label, type=d_btn_type, use_container_width=True, key="btn_d_custom"):
-                    custom_dialog("d_custom", custom_tags_drink)
+                    open_drink_custom_dialog(custom_tags_drink)
             with dc_clear:
                 if st.button("❌", help="清空飲料客製需求", use_container_width=True, key="clr_d_custom"):
                     st.session_state["d_custom_tags"] = []
