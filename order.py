@@ -359,6 +359,8 @@ def get_members():
 
 def get_options(category):
     df=get_db("SELECT option_value FROM order_options WHERE category=? ORDER BY sort_order,id",(category,))
+    if df.attrs.get("db_error", False):
+        raise sqlite3.OperationalError("客製選項讀取失敗，請重試。")
     return df["option_value"].astype(str).tolist() if not df.empty else []
 
 
@@ -372,6 +374,8 @@ def get_default_option(category):
     df=get_db("""SELECT option_value FROM order_options
                  WHERE category=? AND is_default=1
                  ORDER BY sort_order,id LIMIT 1""",(category,))
+    if df.attrs.get("db_error", False):
+        raise sqlite3.OperationalError("客製預設值讀取失敗，請重試。")
     if not df.empty:
         return str(df.iloc[0]["option_value"])
     vals=get_options(category)
@@ -559,15 +563,29 @@ def ensure_single_select_defaults():
         "ice":(["完全去冰","去冰","微冰","少冰","正常冰","溫","熱"],"完全去冰"),
         "sugar":(["無糖","一分糖","微糖","少糖","半糖","正常糖"],"無糖"),
     }
-    for cat,(values,default_value) in bootstrap.items():
-        if not get_options(cat):
-            set_options(cat,values,default_value)
-        elif get_db(
-            "SELECT 1 FROM order_options WHERE category=? AND is_default=1",(cat,)
-        ).empty:
-            vals=get_options(cat)
-            if vals:
-                set_options(cat,vals,vals[0])
+    # The write connection owns BEGIN IMMEDIATE and the same-file lock.
+    # Read and initialize together; a failed read must never mean "missing".
+    conn=db_connect(write=True)
+    try:
+        for cat,(values,default_value) in bootstrap.items():
+            rows=conn.execute(
+                "SELECT id,option_value FROM order_options WHERE category=? ORDER BY sort_order,id",
+                (cat,)).fetchall()
+            defaults=conn.execute(
+                "SELECT 1 FROM order_options WHERE category=? AND is_default=1", (cat,)).fetchall()
+            if not rows:
+                for idx,value in enumerate(values):
+                    conn.execute("""INSERT INTO order_options
+                        (category,option_value,sort_order,is_default) VALUES(?,?,?,?)""",
+                        (cat,value,idx,int(value==default_value)))
+            elif not defaults:
+                conn.execute("UPDATE order_options SET is_default=1 WHERE id=?",(rows[0][0],))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 ensure_single_select_defaults()
 if restore_result=="missing" and github_is_configured():
