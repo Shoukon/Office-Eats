@@ -602,9 +602,9 @@ def save_and_sync():
 
 
 def show_save_feedback(action, sync_ok):
-    if sync_ok:
-        st.toast(f"✅ {action}；本機已儲存並同步至 GitHub。")
-    else:
+    # Successful operations are visible in the refreshed data; only failures
+    # require a notification. The local write and sync still run at the caller.
+    if not sync_ok:
         st.toast(f"⚠️ {action}；本機已儲存，但 GitHub 備份未確認成功，請重試同步。")
 
 
@@ -867,9 +867,7 @@ with st.sidebar:
                 raise RuntimeError("SQLite 店家資料寫入後驗證不一致。")
 
             sync_ok=save_and_sync()
-            if sync_ok:
-                st.success("✅ 今日店家已儲存並同步")
-            else:
+            if not sync_ok:
                 st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
             st.rerun()
         except Exception as e:
@@ -1357,7 +1355,6 @@ def _pay_logic_grouped(cat, df, k, order_view):
                                 f'</div>', unsafe_allow_html=True)
                 with c_btn:
                     token_key=f"pay_token_{k}_{name}"
-                    st.caption(f"確認此人全部未付{cat}：{len(group)} 筆，${total_price}")
                     if st.button("確認收款", key=f"pay_{k}_{name}_{order_view['generation']}", use_container_width=True, type="primary",
                                  on_click=remember_order_token,args=(token_key,backup_guard.order_token(order_view,ids))):
                         token=st.session_state.pop(token_key,None)
@@ -1405,7 +1402,6 @@ def _pay_logic_grouped(cat, df, k, order_view):
                 with c1: st.write(f"~~{html.escape(str(name))} (${total_price})~~") 
                 with c2:
                     token_key=f"undo_token_{k}_{name}"
-                    st.caption(f"撤銷此人全部已付{cat}：{len(group)} 筆，${total_price}")
                     if st.button("撤銷收款", key=f"undo_{k}_{name}_{order_view['generation']}", use_container_width=True,
                                  on_click=remember_order_token,args=(token_key,backup_guard.order_token(order_view,ids))):
                         token=st.session_state.pop(token_key,None)

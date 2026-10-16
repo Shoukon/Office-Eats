@@ -510,12 +510,84 @@ class SaveSyncFeedbackTests(IsolatedTest):
             github_get_backup=self.remote.get,github_put_backup=self.remote.put))
 
     def check_feedback(self, synced):
+        self.assertEqual(self.ui.errors,[])
+        if synced:
+            self.assertEqual(self.ui.toasts,[])
+            return
         self.assertEqual(len(self.ui.toasts),1)
         message=self.ui.toasts[0]
         self.assertIn('本機已儲存',message)
-        self.assertEqual(message.startswith('✅'),synced)
+        self.assertTrue(message.startswith('⚠️'))
         self.assertEqual('請重試同步' in message,not synced)
         self.assertEqual(self.ui.errors,[])
+
+    def test_successful_payment_and_undo_are_silent_and_still_sync(self):
+        for category,key in [('主餐','main'),('飲料','drink')]:
+            conn=self.guard.connect(write=True)
+            try:
+                conn.execute('UPDATE orders SET category=? WHERE id=1',(category,)); conn.commit()
+            finally: conn.close()
+            for button,paid in [('確認收款',1),('撤銷收款',0)]:
+                with self.subTest(category=category,button=button):
+                    self.ui.clicked.clear(); self.ui.toasts.clear(); self.ui.buttons.clear()
+                    view=self.guard.order_snapshot(); frame=pd.DataFrame(view['rows'],columns=ORDER_FIELDS)
+                    markdown=[]; captions=[]
+                    self.ui.markdown=lambda text,**kw:markdown.append(text)
+                    self.ui.write=lambda text,**kw:markdown.append(str(text))
+                    self.ui.caption=captions.append
+                    self.env['_pay_logic_grouped'](category,frame,key,view)
+                    registered=next(kw for label,kw in self.ui.buttons if label==button)
+                    registered['on_click'](*registered['args']); self.ui.clicked.add(button)
+                    self.env['_pay_logic_grouped'](category,frame,key,view)
+                    self.assertEqual(self.snapshot()['orders'][0]['is_paid'],paid)
+                    self.assertEqual(self.remote.data['orders'][0]['is_paid'],paid)
+                    self.assertTrue(any('$100' in text for text in markdown))
+                    self.assertFalse(any('此人全部' in text for text in captions))
+                    self.check_feedback(True)
+
+    def test_successful_edit_and_delete_are_silent_and_still_sync(self):
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        self.ui.clicked.add('💾 儲存修改'); self.ui.text_values['餐點名稱']='Fake silent edit'
+        self.env['edit_order_dialog'](1,'主餐','測試便當',100,1,'',token)
+        self.assertEqual(self.snapshot()['orders'][0]['item_name'],'Fake silent edit')
+        self.assertEqual(self.remote.data['orders'][0]['item_name'],'Fake silent edit')
+        self.check_feedback(True)
+        self.ui.clicked.clear(); self.ui.buttons.clear()
+        self.env['render_my_orders']('測試甲')
+        registered=next(kw for label,kw in self.ui.buttons if label=='⭕ 確認')
+        registered['on_click'](*registered['args']); self.ui.clicked.add('⭕ 確認')
+        self.env['render_my_orders']('測試甲')
+        self.assertEqual(self.snapshot()['orders'],[])
+        self.assertEqual(self.remote.data['orders'],[]); self.check_feedback(True)
+
+    def test_shop_feedback_is_silent_on_success_and_warns_on_sync_failure(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Call)
+            and any(k.arg=='key' and isinstance(k.value,ast.Constant)
+                    and k.value.value=='save_shop_names' for k in n.test.keywords))
+        statuses=[]; warnings=[]
+        self.ui.success=statuses.append; self.ui.warning=warnings.append
+        self.ui.clicked.add('💾 儲存今日店家')
+        def read_shops():
+            conn=self.guard.connect()
+            try: return dict(conn.execute('SELECT category,shop_name FROM config_shop'))
+            finally: conn.close()
+        for failure in (False,True):
+            with self.subTest(sync_failure=failure):
+                self.remote.fail_get=failure; warnings.clear()
+                scope=dict(self.env,db_connect=self.guard.connect,
+                    get_current_shop_names=read_shops,
+                    # Only the feedback contract is under test for this sidebar;
+                    # real FakeRemote sync is exercised by the order cases.
+                    save_and_sync=lambda:not failure,
+                    new_main_shop='Fake shop',new_drink_shop='Fake drinks')
+                exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),scope)
+                self.assertEqual(read_shops(),
+                                 {'main':'Fake shop','drink':'Fake drinks'})
+                self.assertEqual(statuses,[]); self.assertEqual(len(warnings),int(failure))
+                if failure: self.assertIn('同步未成功',warnings[0])
+                self.assertEqual(self.ui.errors,[])
 
     def test_meal_and_drink_creation_distinguish_confirmed_and_failed_sync(self):
         tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))

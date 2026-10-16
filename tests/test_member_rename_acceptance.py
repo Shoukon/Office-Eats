@@ -137,7 +137,7 @@ class MemberRenameAcceptance(unittest.TestCase):
             else:
                 with self.assertRaises(RerunSignal): ui_env['manage_members_dialog']()
                 self.assertEqual(synced, [True])
-                self.assertEqual(self.ui.toasts, ['✅ 姓名已修改；本機已儲存並同步至 GitHub。'])
+                self.assertEqual(self.ui.toasts, [])
                 self.assertEqual(self.guard.export()['orders'][0]['name'], '測試改名')
 
 
@@ -260,7 +260,7 @@ class MemberManagementBatchAcceptance(unittest.TestCase):
                 self.assertTrue(self.ui.errors)
                 self.assertEqual(synced,[]); self.assertEqual(self.ui.toasts,[])
 
-    def test_payment_scope_text_matches_group_without_selected_user(self):
+    def test_payment_scope_captions_removed_but_buttons_remain_without_selected_user(self):
         from test_order_identity import OrderUIIntegrationTests
         synced=[]; captions=[]; self.ui.caption=captions.append
         harness=OrderUIIntegrationTests(); harness.guard=self.guard
@@ -268,10 +268,12 @@ class MemberManagementBatchAcceptance(unittest.TestCase):
         view=self.guard.order_snapshot()
         frame=pd.DataFrame(view['rows'],columns=env['ORDER_COLUMNS'])
         env['_pay_logic_grouped']('主餐',frame,'main',view)
-        self.assertIn('確認此人全部未付主餐：1 筆，$100',captions)
+        self.assertFalse(any('確認此人全部未付' in text for text in captions))
+        self.assertTrue(any(label=='確認收款' for label,_ in self.ui.buttons))
         frame['is_paid']=1
         env['_pay_logic_grouped']('主餐',frame,'main',view)
-        self.assertIn('撤銷此人全部已付主餐：1 筆，$100',captions)
+        self.assertFalse(any('撤銷此人全部已付' in text for text in captions))
+        self.assertTrue(any(label=='撤銷收款' for label,_ in self.ui.buttons))
         self.assertNotIn('user_name',self.ui.session_state)
         self.assertEqual(synced,[])
 
