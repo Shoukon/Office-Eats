@@ -353,6 +353,12 @@ def github_put_backup(data,sha):
         raise  # ambiguous response: caller must reconcile with GET, not retry PUT
 
 
+def serialize_drink_options(size, sugar, ice):
+    """Keep the existing slash format, including empty positional fields."""
+    values=[str(value).strip() if value is not None else "" for value in (size,sugar,ice)]
+    return "/".join(values) if any(values) else ""
+
+
 def get_members():
     return get_db("SELECT id,name,sort_order FROM order_members ORDER BY sort_order,id")
 
@@ -1073,7 +1079,6 @@ def render_stats_section():
             base_values = [
                 value.strip()
                 for value in base_part.split("/")
-                if value is not None and value.strip()
             ]
 
             size = base_values[0] if base_values and base_values[0] in size_order else ""
@@ -1091,7 +1096,7 @@ def render_stats_section():
             ]
             unknown_base_values = [
                 value for value in base_values
-                if value not in recognized_base_values
+                if value and value not in recognized_base_values
             ]
             extra_parts = unknown_base_values + (
                 [
@@ -1749,11 +1754,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             key=f"{drink_manual_key}_widget"
         ).strip()
 
-        clean_drink_options = [
-            str(v).strip() for v in [edit_size, edit_sugar, edit_ice]
-            if v is not None and str(v).strip()
-        ]
-        new_custom = "/".join(clean_drink_options)
+        new_custom = serialize_drink_options(edit_size, edit_sugar, edit_ice)
 
         clean_drink_tags = [
             str(v).strip() for v in edit_drink_tags
@@ -1801,11 +1802,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                 st.session_state.get(f"{drink_manual_key}_widget", edit_drink_manual)
             ).strip()
 
-            save_options = [
-                str(v).strip() for v in [edit_size, edit_sugar, edit_ice]
-                if v is not None and str(v).strip()
-            ]
-            save_custom = "/".join(save_options)
+            save_custom = serialize_drink_options(edit_size, edit_sugar, edit_ice)
 
             if save_tags:
                 save_custom += f"{', ' if save_custom else ''}{', '.join(save_tags)}"
@@ -2166,13 +2163,7 @@ with tab1:
                 elif d_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    drink_options = [d_size, d_sugar, d_ice]
-                    clean_drink_options = [
-                        str(value).strip()
-                        for value in drink_options
-                        if value is not None and str(value).strip()
-                    ]
-                    base_config = "/".join(clean_drink_options)
+                    base_config = serialize_drink_options(d_size, d_sugar, d_ice)
 
                     clean_drink_tags = [
                         str(value).strip()

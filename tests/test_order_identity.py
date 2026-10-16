@@ -696,7 +696,7 @@ class SaveSyncFeedbackTests(IsolatedTest):
 class OrderUIIntegrationTests(IsolatedTest):
     def env(self, ui, synced):
         import html
-        names = ["remember_order_token", "execute_order_action", "edit_order_dialog", "render_my_orders", "render_payment_section", "_pay_logic_grouped", "clear_orders_dialog", "save_and_sync", "show_save_feedback"]
+        names = ["serialize_drink_options", "remember_order_token", "execute_order_action", "edit_order_dialog", "render_my_orders", "render_payment_section", "_pay_logic_grouped", "clear_orders_dialog", "save_and_sync", "show_save_feedback"]
         return load_app_functions(names, st=ui, backup_guard=self.guard, pd=pd, html=html,
                                   ORDER_COLUMNS=list(ORDER_FIELDS), OrderConflict=OrderConflict,
                                   sync_github_backup=lambda show_error=False: synced.append(True) or True,
@@ -963,3 +963,87 @@ class ShopLockAcceptance(unittest.TestCase):
         self.run_shop('commit')
         self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.get_calls,gets)
         self.assertEqual(self.remote.put_calls,0); self.assertTrue(self.ui.errors)
+
+
+class DrinkPositionAcceptance(IsolatedTest):
+    def setUp(self):
+        super().setUp()
+        self.serialize=load_app_functions(['serialize_drink_options'])['serialize_drink_options']
+
+    def roundtrip(self, values):
+        custom=self.serialize(*values)
+        data=fixture(); data['orders'][0].update(category='飲料',custom=custom)
+        self.ready(data)
+        harness=OrderUIIntegrationTests(); harness.guard=self.guard
+        for repeat in range(2):
+            token=self.guard.order_token(self.guard.order_snapshot(),[1])
+            ui=FakeUI(); env=harness.env(ui,[])
+            env['edit_order_dialog'](1,'飲料','Fake drink',100,1,custom,token)
+            for field,expected in zip(('size','sugar','ice'),values):
+                self.assertEqual(ui.session_state[f"edit_d_{field}_1_{token['generation']}"],expected)
+            ui.clicked.add('💾 儲存修改')
+            env['edit_order_dialog'](1,'飲料','Fake drink',100,1,custom,token)
+            self.assertEqual(ui.errors,[])
+            self.assertEqual(self.snapshot()['orders'][0]['custom'],custom)
+        return custom
+
+    def test_empty_size_roundtrips(self):
+        self.assertEqual(self.roundtrip((None,'無糖','去冰')),'/無糖/去冰')
+
+    def test_empty_sugar_roundtrips(self):
+        self.assertEqual(self.roundtrip(('L',None,'去冰')),'L//去冰')
+
+    def test_empty_ice_roundtrips(self):
+        self.assertEqual(self.roundtrip(('L','無糖',None)),'L/無糖/')
+
+    def test_all_empty_stays_empty(self):
+        self.assertEqual(self.roundtrip((None,None,None)),'')
+
+    def test_clearing_middle_field_then_reopening_keeps_ice(self):
+        data=fixture(); data['orders'][0].update(category='飲料',custom='L/無糖/去冰')
+        self.ready(data); harness=OrderUIIntegrationTests(); harness.guard=self.guard
+        token=self.guard.order_token(self.guard.order_snapshot(),[1]); ui=FakeUI()
+        env=harness.env(ui,[])
+        env['edit_order_dialog'](1,'飲料','Fake',100,1,'L/無糖/去冰',token)
+        ui.session_state[f"edit_d_sugar_1_{token['generation']}"]=None
+        ui.clicked.add('💾 儲存修改')
+        env['edit_order_dialog'](1,'飲料','Fake',100,1,'L/無糖/去冰',token)
+        custom=self.snapshot()['orders'][0]['custom']; self.assertEqual(custom,'L//去冰')
+        fresh=FakeUI(); token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        harness.env(fresh,[])['edit_order_dialog'](1,'飲料','Fake',100,1,custom,token)
+        self.assertIsNone(fresh.session_state[f"edit_d_sugar_1_{token['generation']}"])
+        self.assertEqual(fresh.session_state[f"edit_d_ice_1_{token['generation']}"],'去冰')
+
+    def test_stats_preserve_empty_positions_and_retired_text(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        parser=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='parse_stats_custom')
+        scope={'get_options':lambda cat:{'drink_size':['M','L'],'sugar':['少糖','無糖'],'ice':['少冰','去冰']}[cat]}
+        exec(compile(ast.Module(body=[parser],type_ignores=[]),str(SOURCE),'exec'),scope)
+        for raw,weights in [('L//去冰',(1,0,1)),('/無糖/去冰',(99,1,1)),('L/無糖/',(1,1,0))]:
+            with self.subTest(raw=raw):
+                parsed=scope['parse_stats_custom']('飲料',raw)
+                self.assertEqual(parsed[1:4],weights)
+                self.assertNotIn('・・',parsed[0])
+        parsed=scope['parse_stats_custom']('飲料','L/舊糖/舊冰, 加珍珠')
+        for value in ('舊糖','舊冰','加珍珠'): self.assertIn(value,parsed[0])
+        self.assertIn('不要吸管',scope['parse_stats_custom']('飲料','不要吸管')[0])
+
+    def test_new_order_button_uses_same_positional_format(self):
+        self.ready(); harness=OrderUIIntegrationTests(); harness.guard=self.guard
+        ui=FakeUI(); env=harness.env(ui,[]); ui.clicked.add('＋ 加入飲料')
+        view=self.guard.member_snapshot()
+        ui.session_state['member_token']={'member_id':view['rows'][0][0],
+            'name':view['rows'][0][1],'generation':view['generation']}
+        env.update(load_app_functions(['create_member_order'],**env))
+        env.update(d_size='L',drink_size_options=['L'],d_sugar=None,d_ice='去冰',
+            d_price_unit=50,d_qty=2,d_name='Fake new drink',d_display_list=[],
+            taiwan_now=lambda:SimpleNamespace(strftime=lambda fmt:NOW))
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Call) and isinstance(n.test.func,ast.Attribute)
+            and n.test.func.attr=='button' and n.test.args and isinstance(n.test.args[0],ast.Constant)
+            and n.test.args[0].value=='＋ 加入飲料')
+        exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),env)
+        self.assertEqual(ui.errors,[])
+        row=self.snapshot()['orders'][-1]
+        self.assertEqual((row['custom'],row['price'],row['quantity']),('L//去冰',100,2))
