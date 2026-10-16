@@ -353,12 +353,20 @@ def github_put_backup(data,sha):
         raise  # ambiguous response: caller must reconcile with GET, not retry PUT
 
 
+def serialize_drink_options(size, sugar, ice):
+    """Keep the existing slash format, including empty positional fields."""
+    values=[str(value).strip() if value is not None else "" for value in (size,sugar,ice)]
+    return "/".join(values) if any(values) else ""
+
+
 def get_members():
     return get_db("SELECT id,name,sort_order FROM order_members ORDER BY sort_order,id")
 
 
 def get_options(category):
     df=get_db("SELECT option_value FROM order_options WHERE category=? ORDER BY sort_order,id",(category,))
+    if df.attrs.get("db_error", False):
+        raise sqlite3.OperationalError("客製選項讀取失敗，請重試。")
     return df["option_value"].astype(str).tolist() if not df.empty else []
 
 
@@ -372,6 +380,8 @@ def get_default_option(category):
     df=get_db("""SELECT option_value FROM order_options
                  WHERE category=? AND is_default=1
                  ORDER BY sort_order,id LIMIT 1""",(category,))
+    if df.attrs.get("db_error", False):
+        raise sqlite3.OperationalError("客製預設值讀取失敗，請重試。")
     if not df.empty:
         return str(df.iloc[0]["option_value"])
     vals=get_options(category)
@@ -559,15 +569,29 @@ def ensure_single_select_defaults():
         "ice":(["完全去冰","去冰","微冰","少冰","正常冰","溫","熱"],"完全去冰"),
         "sugar":(["無糖","一分糖","微糖","少糖","半糖","正常糖"],"無糖"),
     }
-    for cat,(values,default_value) in bootstrap.items():
-        if not get_options(cat):
-            set_options(cat,values,default_value)
-        elif get_db(
-            "SELECT 1 FROM order_options WHERE category=? AND is_default=1",(cat,)
-        ).empty:
-            vals=get_options(cat)
-            if vals:
-                set_options(cat,vals,vals[0])
+    # The write connection owns BEGIN IMMEDIATE and the same-file lock.
+    # Read and initialize together; a failed read must never mean "missing".
+    conn=db_connect(write=True)
+    try:
+        for cat,(values,default_value) in bootstrap.items():
+            rows=conn.execute(
+                "SELECT id,option_value FROM order_options WHERE category=? ORDER BY sort_order,id",
+                (cat,)).fetchall()
+            defaults=conn.execute(
+                "SELECT 1 FROM order_options WHERE category=? AND is_default=1", (cat,)).fetchall()
+            if not rows:
+                for idx,value in enumerate(values):
+                    conn.execute("""INSERT INTO order_options
+                        (category,option_value,sort_order,is_default) VALUES(?,?,?,?)""",
+                        (cat,value,idx,int(value==default_value)))
+            elif not defaults:
+                conn.execute("UPDATE order_options SET is_default=1 WHERE id=?",(rows[0][0],))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 ensure_single_select_defaults()
 if restore_result=="missing" and github_is_configured():
@@ -847,34 +871,31 @@ with st.sidebar:
     new_drink_shop=st.text_input("飲料店家",value=db_drink_shop, key="shop_drink_input").strip()
 
     if st.button("💾 儲存今日店家", key="save_shop_names", use_container_width=True):
-        conn=db_connect(write=True)
+        conn=None
+        shop_saved=False
         try:
-            conn.execute(
-                "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-                "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-                ("main", new_main_shop)
-            )
-            conn.execute(
-                "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-                "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-                ("drink", new_drink_shop)
-            )
-            conn.commit()
-
-            # 驗證：寫入後立即重新讀 SQLite，確保不是只改到 widget state。
-            saved = get_current_shop_names()
-            if saved["main"] != new_main_shop or saved["drink"] != new_drink_shop:
+            conn=db_connect(write=True)
+            for category,shop_name in (("main",new_main_shop),("drink",new_drink_shop)):
+                conn.execute(
+                    "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
+                    "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
+                    (category,shop_name))
+            saved=dict(conn.execute("SELECT category,shop_name FROM config_shop"))
+            if saved.get("main") != new_main_shop or saved.get("drink") != new_drink_shop:
                 raise RuntimeError("SQLite 店家資料寫入後驗證不一致。")
-
+            conn.commit()
+            shop_saved=True
+        except Exception as e:
+            if conn is not None: conn.rollback()
+            st.error(f"⚠️ 今日店家儲存失敗：{e}")
+        finally:
+            if conn is not None: conn.close()
+        # Synchronization takes its own same-file lock, after the write closes.
+        if shop_saved:
             sync_ok=save_and_sync()
             if not sync_ok:
                 st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
             st.rerun()
-        except Exception as e:
-            conn.rollback()
-            st.error(f"⚠️ 今日店家儲存失敗：{e}")
-        finally:
-            conn.close()
 
     st.divider(); st.subheader("🗑️ 資料管理")
     clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
@@ -1058,7 +1079,6 @@ def render_stats_section():
             base_values = [
                 value.strip()
                 for value in base_part.split("/")
-                if value is not None and value.strip()
             ]
 
             size = base_values[0] if base_values and base_values[0] in size_order else ""
@@ -1076,7 +1096,7 @@ def render_stats_section():
             ]
             unknown_base_values = [
                 value for value in base_values
-                if value not in recognized_base_values
+                if value and value not in recognized_base_values
             ]
             extra_parts = unknown_base_values + (
                 [
@@ -1734,11 +1754,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             key=f"{drink_manual_key}_widget"
         ).strip()
 
-        clean_drink_options = [
-            str(v).strip() for v in [edit_size, edit_sugar, edit_ice]
-            if v is not None and str(v).strip()
-        ]
-        new_custom = "/".join(clean_drink_options)
+        new_custom = serialize_drink_options(edit_size, edit_sugar, edit_ice)
 
         clean_drink_tags = [
             str(v).strip() for v in edit_drink_tags
@@ -1786,11 +1802,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
                 st.session_state.get(f"{drink_manual_key}_widget", edit_drink_manual)
             ).strip()
 
-            save_options = [
-                str(v).strip() for v in [edit_size, edit_sugar, edit_ice]
-                if v is not None and str(v).strip()
-            ]
-            save_custom = "/".join(save_options)
+            save_custom = serialize_drink_options(edit_size, edit_sugar, edit_ice)
 
             if save_tags:
                 save_custom += f"{', ' if save_custom else ''}{', '.join(save_tags)}"
@@ -2151,13 +2163,7 @@ with tab1:
                 elif d_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    drink_options = [d_size, d_sugar, d_ice]
-                    clean_drink_options = [
-                        str(value).strip()
-                        for value in drink_options
-                        if value is not None and str(value).strip()
-                    ]
-                    base_config = "/".join(clean_drink_options)
+                    base_config = serialize_drink_options(d_size, d_sugar, d_ice)
 
                     clean_drink_tags = [
                         str(value).strip()

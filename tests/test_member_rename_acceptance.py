@@ -280,3 +280,42 @@ class MemberManagementBatchAcceptance(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OptionInitializationAcceptance(unittest.TestCase):
+    setUp = MemberRenameAcceptance.setUp
+    # Reuse fake SQLite setup, but do not inherit unrelated test methods.
+    def test_option_read_failure_keeps_all_data(self):
+        self.check_read_failure('SELECT id,option_value')
+
+    def test_default_read_failure_keeps_all_data(self):
+        self.check_read_failure('SELECT 1 FROM order_options')
+
+    def check_read_failure(self, prefix):
+        before=self.guard.export()
+        connect=self.guard.connect
+        class FailingRead:
+            def __init__(self, conn): self.conn=conn
+            def execute(self, query, params=()):
+                if query.startswith(prefix): raise sqlite3.OperationalError('fake read failure')
+                return self.conn.execute(query,params)
+            def __getattr__(self,key): return getattr(self.conn,key)
+        env=load_app_functions(['ensure_single_select_defaults'],
+            db_connect=lambda write=False:FailingRead(connect(write=write)))
+        with self.assertRaises(sqlite3.OperationalError): env['ensure_single_select_defaults']()
+        self.assertEqual(self.guard.export(),before)
+
+    def test_empty_categories_initialize_and_existing_options_survive(self):
+        env=load_app_functions(['ensure_single_select_defaults'],db_connect=self.guard.connect)
+        env['ensure_single_select_defaults']()
+        after=self.guard.export()
+        self.assertEqual(after['options']['main_size'],self.before['options']['main_size'])
+        self.assertTrue(after['options']['drink_size'])
+        env['ensure_single_select_defaults']()
+        self.assertEqual(self.guard.export(),after)
+
+    def test_failed_dataframe_reads_raise_instead_of_becoming_empty(self):
+        failed=pd.DataFrame(); failed.attrs['db_error']=True
+        env=load_app_functions(['get_options','get_default_option'],get_db=lambda *a:failed)
+        for name in ('get_options','get_default_option'):
+            with self.assertRaises(sqlite3.OperationalError): env[name]('main_size')
