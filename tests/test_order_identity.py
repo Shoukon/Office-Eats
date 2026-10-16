@@ -901,3 +901,65 @@ class OrderUIIntegrationTests(IsolatedTest):
                     self.assertTrue(ui.errors); self.assertEqual(synced,[])
                     self.assertFalse(any(label in ("✏️","⭕ 確認","確認收款","撤銷收款","💾 儲存修改") for label,_ in ui.buttons))
                     self.assertEqual(self.snapshot(),before)
+
+
+class ShopLockAcceptance(unittest.TestCase):
+    snapshot = IsolatedTest.snapshot
+    ready = IsolatedTest.ready
+    def setUp(self):
+        IsolatedTest.setUp(self)
+        self.remote=self.ready()
+        self.ui=FakeUI(); self.synced=[]
+        harness=OrderUIIntegrationTests(); harness.guard=self.guard
+        self.env=harness.env(self.ui,self.synced)
+        self.env.update(load_app_functions(['sync_github_backup','current_backup_result'],
+            **self.env, github_is_configured=lambda:True,
+            github_get_backup=self.remote.get,github_put_backup=self.remote.put))
+    def run_shop(self, failure=None):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Call)
+            and any(k.arg=='key' and isinstance(k.value,ast.Constant)
+                    and k.value.value=='save_shop_names' for k in n.test.keywords))
+        self.ui.clicked.add('💾 儲存今日店家')
+        self.warnings=[]; self.ui.warning=self.warnings.append
+        connect=self.guard.connect
+        class FaultConnection:
+            def __init__(self,conn): self.conn=conn
+            def execute(self,sql,params=()):
+                if failure=='second' and params and params[0]=='drink':
+                    raise sqlite3.OperationalError('fake second write failure')
+                return self.conn.execute(sql,params)
+            def commit(self):
+                if failure=='commit': raise sqlite3.OperationalError('fake commit failure')
+                return self.conn.commit()
+            def __getattr__(self,key): return getattr(self.conn,key)
+        scope=dict(self.env,db_connect=lambda write=False:FaultConnection(connect(write=write)),
+                   new_main_shop='Fake main changed',new_drink_shop='Fake drink changed')
+        exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),scope)
+
+    def test_real_lock_released_before_successful_sync(self):
+        self.run_shop()
+        self.assertEqual(self.ui.errors,[]); self.assertEqual(self.warnings,[])
+        self.assertEqual(self.snapshot()['config_shop'],self.remote.data['config_shop'])
+        self.assertEqual(self.remote.put_calls,1)
+
+    def test_sync_failure_keeps_both_local_shop_updates(self):
+        self.remote.fail_get=True
+        self.run_shop()
+        self.assertEqual(dict((r['category'],r['shop_name']) for r in self.snapshot()['config_shop']),
+                         {'main':'Fake main changed','drink':'Fake drink changed'})
+        self.assertEqual(self.remote.put_calls,0); self.assertEqual(len(self.warnings),1)
+        self.assertEqual(self.ui.errors,[])
+
+    def test_second_shop_failure_rolls_back_and_does_not_sync(self):
+        before=self.snapshot(); gets=self.remote.get_calls
+        self.run_shop('second')
+        self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.get_calls,gets)
+        self.assertEqual(self.remote.put_calls,0); self.assertTrue(self.ui.errors)
+
+    def test_commit_failure_rolls_back_and_does_not_sync(self):
+        before=self.snapshot(); gets=self.remote.get_calls
+        self.run_shop('commit')
+        self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.get_calls,gets)
+        self.assertEqual(self.remote.put_calls,0); self.assertTrue(self.ui.errors)

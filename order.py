@@ -865,34 +865,31 @@ with st.sidebar:
     new_drink_shop=st.text_input("飲料店家",value=db_drink_shop, key="shop_drink_input").strip()
 
     if st.button("💾 儲存今日店家", key="save_shop_names", use_container_width=True):
-        conn=db_connect(write=True)
+        conn=None
+        shop_saved=False
         try:
-            conn.execute(
-                "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-                "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-                ("main", new_main_shop)
-            )
-            conn.execute(
-                "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-                "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-                ("drink", new_drink_shop)
-            )
-            conn.commit()
-
-            # 驗證：寫入後立即重新讀 SQLite，確保不是只改到 widget state。
-            saved = get_current_shop_names()
-            if saved["main"] != new_main_shop or saved["drink"] != new_drink_shop:
+            conn=db_connect(write=True)
+            for category,shop_name in (("main",new_main_shop),("drink",new_drink_shop)):
+                conn.execute(
+                    "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
+                    "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
+                    (category,shop_name))
+            saved=dict(conn.execute("SELECT category,shop_name FROM config_shop"))
+            if saved.get("main") != new_main_shop or saved.get("drink") != new_drink_shop:
                 raise RuntimeError("SQLite 店家資料寫入後驗證不一致。")
-
+            conn.commit()
+            shop_saved=True
+        except Exception as e:
+            if conn is not None: conn.rollback()
+            st.error(f"⚠️ 今日店家儲存失敗：{e}")
+        finally:
+            if conn is not None: conn.close()
+        # Synchronization takes its own same-file lock, after the write closes.
+        if shop_saved:
             sync_ok=save_and_sync()
             if not sync_ok:
                 st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
             st.rerun()
-        except Exception as e:
-            conn.rollback()
-            st.error(f"⚠️ 今日店家儲存失敗：{e}")
-        finally:
-            conn.close()
 
     st.divider(); st.subheader("🗑️ 資料管理")
     clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
