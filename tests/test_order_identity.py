@@ -1332,7 +1332,8 @@ for parent in ast.walk(tree):
         app=self.app(); self.open(app)
         next(b for b in app.button if b.label=='確認刪除').click().run()
         self.assertEqual(len(app.exception),0)
-        self.assertNotIn('_active_order_delete_request',app.session_state.filtered_state)
+        with self.assertRaises(KeyError):
+            app.session_state['_active_order_delete_request']
         # AppTest retains fragment deltas until a complete app run; verify that
         # run explicitly rather than claiming a browser overlay was observed.
         app.run()
@@ -1348,7 +1349,8 @@ for parent in ast.walk(tree):
         app=self.app(); self.open(app)
         next(b for b in app.button if b.label=='取消').click().run()
         self.assertEqual(len(app.exception),0)
-        self.assertNotIn('_active_order_delete_request',app.session_state.filtered_state)
+        with self.assertRaises(KeyError):
+            app.session_state['_active_order_delete_request']
         app.run()
         self.assertEqual(len(app.get('dialog')),0)
         self.assertEqual(self.seed.snapshot(),self.seed.before)
@@ -1366,7 +1368,8 @@ for parent in ast.walk(tree):
         self.assertTrue(app.error); self.assertEqual(self.seed.snapshot(),self.seed.before)
         self.assertEqual(app.session_state['fake_remote'].put_calls,0)
         next(b for b in app.button if b.label=='取消').click().run()
-        self.assertNotIn('_active_order_delete_request',app.session_state.filtered_state)
+        with self.assertRaises(KeyError):
+            app.session_state['_active_order_delete_request']
         app.run()
         self.assertEqual(len(app.get('dialog')),0)
 
