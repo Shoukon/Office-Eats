@@ -283,6 +283,12 @@ class BackupGuard:
         self.timeout = timeout
 
     def load_state(self):
+        # Windows open handles can deny atomic replace. Serialize journal I/O
+        # only, never a network request. Readers release this before SQLite I/O.
+        with self._lock_file(str(self.state_path) + ".lock", .001):
+            return self._load_state()
+
+    def _load_state(self):
         if not self.state_path.exists():
             return {"state_version": 1, "restore": "ready", "adoption_blocked": False, "baseline_known": False, "remote_sha": None,
                     "attempt": None, "sync": {"kind": "pending", "message": "尚未確認 GitHub 備份。"}}
@@ -303,6 +309,10 @@ class BackupGuard:
             if "order_generation" in state and (not isinstance(generation, str) or len(generation) != 32
                     or any(char not in "0123456789abcdef" for char in generation)):
                 raise ValueError("invalid order generation")
+            read_generation = state.get("read_generation")
+            if read_generation is not None and (not isinstance(read_generation, str) or len(read_generation) != 32
+                    or any(char not in "0123456789abcdef" for char in read_generation)):
+                raise ValueError("invalid read generation")
             if attempt is not None and (not isinstance(attempt, dict) or attempt.get("kind") not in ("sync", "import")
                     or any(not isinstance(attempt.get(key), str) or len(attempt[key]) != 64
                            for key in ("before", "target"))):
@@ -318,6 +328,10 @@ class BackupGuard:
             raise SafetyBlocked("本機安全狀態無法讀取；停止寫入，請保留狀態檔並檢查。") from exc
 
     def save_state(self, state):
+        with self._lock_file(str(self.state_path) + ".lock", .001):
+            self._save_state(state)
+
+    def _save_state(self, state):
         # Same-db writers hold BEGIN IMMEDIATE while updating this journal.
         fd, name = tempfile.mkstemp(prefix=self.state_path.name + ".", dir=self.state_path.parent)
         try:
@@ -330,12 +344,15 @@ class BackupGuard:
             if os.path.exists(name):
                 os.unlink(name)
 
-    @contextmanager
     def file_lock(self):
+        return self._lock_file(str(self.db_file) + ".safety.lock")
+
+    @contextmanager
+    def _lock_file(self, path, poll_interval=.05):
         # Preserve coordination across SQLite commit/rollback and sidecar writes.
         # Advisory OS locks are released on process death. Same local filesystem
         # only: do not use this as a distributed/cloud-instance lock.
-        with open(str(self.db_file) + ".safety.lock", "a+b") as stream:
+        with open(path, "a+b") as stream:
             if os.fstat(stream.fileno()).st_size == 0:
                 stream.write(b"0")
                 stream.flush()
@@ -355,7 +372,7 @@ class BackupGuard:
                         raise
                     if time.monotonic() >= deadline:
                         raise sqlite3.OperationalError("database is locked (backup coordination)") from exc
-                    time.sleep(0.05)
+                    time.sleep(poll_interval)
             try:
                 yield
             finally:
@@ -579,6 +596,13 @@ class BackupGuard:
                 self.save_state(state)
                 return False
             before = export_snapshot(conn, self.timestamp())
+            # Bind this epoch to committed SQLite content only while holding the
+            # original exclusive lock, before any network wait. Replacement
+            # publishes a DIFFERENT order_generation before changing rows, so an
+            # old read binding cannot bless pre-import rows with a new identity.
+            if imported is None and state.get("order_generation") and state.get("read_generation") != state["order_generation"]:
+                state["read_generation"] = state["order_generation"]
+                self.save_state(state)
             try:
                 remote, sha = remote_get()
                 if remote is not None:
@@ -640,14 +664,44 @@ class BackupGuard:
         self.save_state(state)
         replace_snapshot(conn, data)
 
-    def member_snapshot(self):
-        """Stable member IDs and replacement epoch from ONE same-file lock."""
+    def _read_identity_rows(self, query, params=()):
+        """Native SQLite read snapshot with a journal epoch fence, or locked fallback.
+
+        No writer/sync lock is shortened. The persisted read binding is optional;
+        old journals and imports use the original lock until a normal sync binds
+        the committed epoch. Both observations must authorize the same epoch.
+        """
+        def readable(state):
+            generation = state.get("order_generation")
+            attempt = state.get("attempt")
+            return (generation and state.get("read_generation") == generation
+                    and state["restore"] == "ready" and not state["adoption_blocked"]
+                    and (attempt is None or attempt["kind"] == "sync"))
+        try:
+            before = self.load_state()
+            if readable(before):
+                conn = sqlite3.connect(self.db_file, timeout=self.timeout)
+                try:
+                    conn.execute("BEGIN")
+                    rows = tuple(tuple(row) for row in conn.execute(query, params))
+                finally:
+                    conn.close()  # release SQLite read lock BEFORE any fallback wait
+                after = self.load_state()
+                if readable(after) and before["order_generation"] == after["order_generation"]:
+                    return {"generation": before["order_generation"], "rows": rows}
+        except SafetyBlocked:
+            # Never trust a failed fence. Re-read under the original lock; a
+            # genuinely corrupt journal still raises and blocks the operation.
+            pass
         with self.exclusive() as conn:
             state = self.load_state()
             if not state.get("order_generation"):
-                raise SafetyBlocked("人員身分保護尚未初始化，請重新整理。")
+                raise SafetyBlocked("訂單身分保護尚未初始化，請重新整理。")
             return {"generation": state["order_generation"], "rows": tuple(
-                tuple(row) for row in conn.execute("SELECT id,name FROM order_members ORDER BY sort_order,id"))}
+                tuple(row) for row in conn.execute(query, params))}
+
+    def member_snapshot(self):
+        return self._read_identity_rows("SELECT id,name FROM order_members ORDER BY sort_order,id")
 
     def create_order(self, member_token, values):
         """Reject stale selection under the same lock/transaction as INSERT."""
@@ -683,18 +737,13 @@ class BackupGuard:
             conn.close()
 
     def order_snapshot(self, name=None):
-        """Capture native SQLite rows AND their generation under the same lock."""
-        with self.exclusive() as conn:
-            state = self.load_state()
-            if "order_generation" not in state:
-                raise SafetyBlocked("訂單身分保護尚未初始化，請重新整理。")
-            query = "SELECT " + ",".join(ORDER_FIELDS) + " FROM orders"
-            params = ()
-            if name is not None:
-                query += " WHERE name=?"
-                params = (name,)
-            rows = tuple(tuple(row) for row in conn.execute(query + " ORDER BY id", params))
-            return {"generation": state["order_generation"], "rows": rows}
+        """Committed rows and a verified replacement epoch; never an import draft."""
+        query = "SELECT " + ",".join(ORDER_FIELDS) + " FROM orders"
+        params = ()
+        if name is not None:
+            query += " WHERE name=?"
+            params = (name,)
+        return self._read_identity_rows(query + " ORDER BY id", params)
 
     def order_token(self, view, ids):
         selected = set(ids)

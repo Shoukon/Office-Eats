@@ -1606,6 +1606,25 @@ elif request=='d_custom':env['open_drink_custom_dialog'](env['get_options']('dri
         self.assertEqual(app.session_state['remote'].put_calls,0)
 
 
+    def test_price_events_and_read_only_section_reruns_never_call_remote(self):
+        app=self.app();remote=app.session_state['remote']
+        before=self.snapshot();counts=(remote.get_calls,remote.put_calls)
+        for prefix in ('m','d'):
+            for price in (110,120,130):
+                app.number_input(key=prefix+'_price').set_value(price);self.run_app(app)
+                self.assertEqual(len(app.exception),0)
+        self.assertEqual((remote.get_calls,remote.put_calls),counts)
+        ui=FakeUI()
+        env=load_app_functions(['render_stats_section','render_payment_section','_pay_logic_grouped','remember_order_token'],
+            st=ui,pd=pd,html=__import__('html'),backup_guard=self.guard,ORDER_COLUMNS=list(ORDER_FIELDS),
+            get_orders_df=lambda:pd.DataFrame(self.snapshot()['orders']),get_options=lambda cat:[],
+            get_current_shop_names=lambda:{'main':'Fake','drink':'Fake'},taiwan_now_str=lambda:NOW,
+            github_get_backup=remote.get,github_put_backup=remote.put,
+            save_and_sync=lambda:self.fail('read-only render attempted sync'))
+        for _ in range(3):env['render_stats_section']();env['render_payment_section']()
+        self.assertEqual((remote.get_calls,remote.put_calls),counts);self.assertEqual(self.snapshot(),before)
+
+
 class TypedCustomAcceptance(IsolatedTest):
     """STAT-01: explicit provenance; no conversion of unmarked historical text."""
     def setUp(self):
