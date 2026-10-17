@@ -418,6 +418,39 @@ def order_custom_group_key(raw, category):
     return json.dumps(key, ensure_ascii=False, separators=(",", ":"))
 
 
+def statistics_custom(raw, category, options):
+    """Read-only semantic projection; legacy text and ambiguous inputs stay opaque."""
+    data = decode_order_custom(raw, category)
+    if data is None:
+        return raw
+    fields = ("main_size", "spicy") if category == "主餐" else ("drink_size", "sugar", "ice")
+    fixed = list(data["fixed"])
+    # Only the existing main "無" sentinel denotes no requirement. A configured
+    # default such as 無糖/正常冰/小辣 is still a concrete requirement.
+    if category == "主餐":
+        fixed = ["" if value == "無" else value for value in fixed]
+    items = order_custom_items(data)
+    matches = [[] for _ in fields]
+    for pos, item in enumerate(items):
+        owners = [i for i, field in enumerate(fields)
+                  if item in options[field] and not (category == "主餐" and item == "無")]
+        if len(owners) > 1:
+            return raw  # option shared by fields: no reliable destination
+        if owners:
+            matches[owners[0]].append(pos)
+    # Do not partially reinterpret a contradictory/duplicate request. Fixed +
+    # the same manual value is also duplicate ambiguity, not permission to erase it.
+    if any(len(found) > 1 or (found and fixed[i]) for i, found in enumerate(matches)):
+        return raw
+    consumed = []
+    for i, found in enumerate(matches):
+        if found:
+            fixed[i] = items[found[0]]
+            consumed.extend(found)
+    free = [item for pos, item in enumerate(items) if pos not in consumed]
+    return encode_order_custom(category, fixed, free, "")
+
+
 def edit_typed_custom(data, edit_key):
     category = data["category"]
     fields = (("尺寸（必選）", "main_size"), ("辣度", "spicy")) if category == "主餐" else (
@@ -1224,9 +1257,17 @@ def render_stats_section():
         # before decoding could accidentally promote a legacy literal envelope.
         df_source['custom'] = df_source['custom'].fillna("").astype(str)
 
-        # 店家看板只改「顯示內容」，不改資料庫原始 custom。
+        # One settings snapshot per fragment; grouping and labels share the
+        # same semantic projection. Original custom remains available to details.
+        def semantic_custom(row):
+            if decode_order_custom(row["custom"], row["category"]) is None:
+                return row["custom"]
+            fields = ("main_size", "spicy") if row["category"] == "主餐" else ("drink_size", "sugar", "ice")
+            return statistics_custom(row["custom"], row["category"],
+                                     {field: stats_values(field) for field in fields})
+        df_source["stats_semantic"] = df_source.apply(semantic_custom, axis=1)
         stats_parsed = df_source.apply(
-            lambda row: parse_stats_custom(row["category"], row["custom"]),
+            lambda row: parse_stats_custom(row["category"], row["stats_semantic"]),
             axis=1,
             result_type="expand"
         )
@@ -1239,7 +1280,7 @@ def render_stats_section():
         ]
         df_source = pd.concat([df_source, stats_parsed], axis=1)
         df_source["stats_key"] = df_source.apply(
-            lambda row: order_custom_group_key(row["custom"], row["category"]), axis=1)
+            lambda row: order_custom_group_key(row["stats_semantic"], row["category"]), axis=1)
 
         c_sum, c_det = st.columns([1, 1.2])
 
