@@ -1992,54 +1992,15 @@ def render_my_orders(user_name):
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
     st.write("")
 
-if 'user_name' not in st.session_state: st.session_state['user_name'] = None
-if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
-if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'] = ""
-if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = []
-if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
-
-with tab2: render_stats_section()
-with tab3: render_payment_section()
-
-with tab1:
-    if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
-    
-    with st.container():
-        st.markdown('<h5>👤 請選擇您的姓名</h5>', unsafe_allow_html=True)
-        c_user, c_btn = st.columns([3, 1.5], vertical_alignment="center")
-        with c_user:
-            if st.session_state['user_name']: st.info(f"目前使用者：**{html.escape(str(st.session_state['user_name']))}**")
-            else: st.warning("⚠️ 尚未選擇姓名")
-        with c_btn:
-            if st.button("👤 選擇／切換使用者", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
-                login_dialog()
-        if not st.session_state['user_name']: st.stop()
-
-    user_name = st.session_state['user_name']
-
-    render_my_orders(user_name)
-
-    # 編輯 Dialog 必須由主 App 流程開啟，而不是從 5 秒 fragment 內直接開啟。
-    # 這樣 fragment 的週期性 rerun 不會干擾 Dialog 的 widget/session state。
-    edit_request = st.session_state.get("_edit_order_request")
-    delete_request = st.session_state.pop("_delete_order_request",None)
-    if delete_request:
-        st.session_state["_active_order_delete_request"]=delete_request
-    delete_request = st.session_state.get("_active_order_delete_request")
-    if delete_request:
-        delete_order_dialog(delete_request)
-    elif edit_request:
-        st.session_state.pop("_edit_order_request", None)
-        edit_order_dialog(
-            edit_request["id"],
-            edit_request["category"],
-            edit_request["item_name"],
-            edit_request["price"],
-            edit_request["quantity"],
-            edit_request["custom"],
-            edit_request.get("order_token"),
-        )
-
+@st.fragment
+def render_order_entry():
+    # Input-only reruns must not rebuild statistics, payment or personal orders.
+    # Read current settings per render, never retain a stale configuration cache.
+    main_size_options = get_options("main_size") or ["無"]
+    spicy_levels = get_options("spicy") or ["無"]
+    drink_size_options = get_options("drink_size") or ["M", "L", "XL"]
+    sugar_levels = get_options("sugar")
+    ice_levels = get_options("ice")
     current_main_shop = get_shop_name("main")
     current_drink_shop = get_shop_name("drink")
 
@@ -2110,12 +2071,13 @@ with tab1:
             c_cust_btn, c_cust_clear = st.columns([4, 1])
             with c_cust_btn:
                 if st.button(btn_label, type=btn_type, use_container_width=True, key="btn_m_custom"):
-                    custom_dialog("m_custom", custom_tags_main)
+                    st.session_state["_entry_custom_request"] = "m_custom"
+                    st.rerun(scope="app")
             with c_cust_clear:
                 if st.button("❌", help="清空主餐客製需求", use_container_width=True, key="clr_m_custom"):
                     st.session_state["m_custom_tags"] = []
                     st.session_state["m_custom_manual"] = ""
-                    st.rerun()
+                    st.rerun(scope="app")
             
             if display_parts: st.caption(f"ℹ️ 即將加入：{html.escape(str(display_text))}")
 
@@ -2159,7 +2121,7 @@ with tab1:
                         # 與飲料尺寸/甜度/冰塊的操作方式一致。
                         st.session_state["m_custom_tags"] = []
                         st.session_state["m_custom_manual"] = ""
-                        show_save_feedback(f"已加入主餐：{m_name} ×{m_qty}", sync_ok); st.rerun()
+                        show_save_feedback(f"已加入主餐：{m_name} ×{m_qty}", sync_ok); st.rerun(scope="app")
                 else: st.toast("⚠️ 請輸入餐點名稱")
 
     with c_drink:
@@ -2221,12 +2183,13 @@ with tab1:
             dc_btn, dc_clear = st.columns([4, 1])
             with dc_btn:
                 if st.button(d_btn_label, type=d_btn_type, use_container_width=True, key="btn_d_custom"):
-                    open_drink_custom_dialog(custom_tags_drink)
+                    st.session_state["_entry_custom_request"] = "d_custom"
+                    st.rerun(scope="app")
             with dc_clear:
                 if st.button("❌", help="清空飲料客製需求", use_container_width=True, key="clr_d_custom"):
                     st.session_state["d_custom_tags"] = []
                     st.session_state["d_custom_manual"] = ""
-                    st.rerun()
+                    st.rerun(scope="app")
 
             if d_display_list: st.caption(f"ℹ️ 即將加入：{html.escape(str(d_display_text))}")
 
@@ -2260,5 +2223,62 @@ with tab1:
                         # 只清除剛剛送出的飲料客製化，不影響尚未送出的主餐設定。
                         st.session_state["d_custom_tags"] = []
                         st.session_state["d_custom_manual"] = ""
-                        show_save_feedback(f"已加入飲料：{d_name} ×{d_qty}", sync_ok); st.rerun()
+                        show_save_feedback(f"已加入飲料：{d_name} ×{d_qty}", sync_ok); st.rerun(scope="app")
                 else: st.toast("⚠️ 請輸入飲料名稱")
+
+
+if 'user_name' not in st.session_state: st.session_state['user_name'] = None
+if 'm_custom_tags' not in st.session_state: st.session_state['m_custom_tags'] = []
+if 'm_custom_manual' not in st.session_state: st.session_state['m_custom_manual'] = ""
+if 'd_custom_tags' not in st.session_state: st.session_state['d_custom_tags'] = []
+if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'] = ""
+
+with tab2: render_stats_section()
+with tab3: render_payment_section()
+
+with tab1:
+    if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
+
+    with st.container():
+        st.markdown('<h5>👤 請選擇您的姓名</h5>', unsafe_allow_html=True)
+        c_user, c_btn = st.columns([3, 1.5], vertical_alignment="center")
+        with c_user:
+            if st.session_state['user_name']: st.info(f"目前使用者：**{html.escape(str(st.session_state['user_name']))}**")
+            else: st.warning("⚠️ 尚未選擇姓名")
+        with c_btn:
+            if st.button("👤 選擇／切換使用者", use_container_width=True, type="primary" if not st.session_state['user_name'] else "secondary"):
+                login_dialog()
+        if not st.session_state['user_name']: st.stop()
+
+    user_name = st.session_state['user_name']
+
+    render_my_orders(user_name)
+
+    # 編輯 Dialog 必須由主 App 流程開啟，而不是從 5 秒 fragment 內直接開啟。
+    # 這樣 fragment 的週期性 rerun 不會干擾 Dialog 的 widget/session state。
+    edit_request = st.session_state.get("_edit_order_request")
+    delete_request = st.session_state.pop("_delete_order_request",None)
+    if delete_request:
+        st.session_state["_active_order_delete_request"]=delete_request
+    delete_request = st.session_state.get("_active_order_delete_request")
+    if delete_request:
+        delete_order_dialog(delete_request)
+    elif edit_request:
+        st.session_state.pop("_edit_order_request", None)
+        edit_order_dialog(
+            edit_request["id"],
+            edit_request["category"],
+            edit_request["item_name"],
+            edit_request["price"],
+            edit_request["quantity"],
+            edit_request["custom"],
+            edit_request.get("order_token"),
+        )
+
+    render_order_entry()
+    # Dialogs are opened by the app, not by a nested fragment rerun.
+    entry_custom_request = st.session_state.pop("_entry_custom_request", None)
+    if entry_custom_request == "m_custom":
+        custom_dialog("m_custom", get_options("tags"))
+    elif entry_custom_request == "d_custom":
+        open_drink_custom_dialog(get_options("drink_tags"))
