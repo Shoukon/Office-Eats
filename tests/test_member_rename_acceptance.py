@@ -319,3 +319,27 @@ class OptionInitializationAcceptance(unittest.TestCase):
         env=load_app_functions(['get_options','get_default_option'],get_db=lambda *a:failed)
         for name in ('get_options','get_default_option'):
             with self.assertRaises(sqlite3.OperationalError): env[name]('main_size')
+
+
+class MemberHistoryNoticeTests(unittest.TestCase):
+    setUp = MemberManagementBatchAcceptance.setUp
+
+    def test_recreated_name_keeps_existing_history_without_reassignment(self):
+        old=self.before['members'][0]
+        self.assertTrue(self.env['delete_member'](old['id'])[0])
+        self.assertTrue(self.env['add_member'](old['name'])[0])
+        after=self.guard.export()
+        self.assertEqual(after['orders'],self.before['orders'])
+        recreated=next(m for m in after['members'] if m['name']==old['name'])
+        self.assertNotEqual(recreated['id'],old['id'])
+
+    def test_member_dialog_explains_history_before_add_or_confirm_delete(self):
+        captions=[]; warnings=[]
+        self.ui.caption=captions.append; self.ui.warning=warnings.append
+        self.ui.session_state['confirm_delete_member_1']=True
+        env=load_app_functions(['manage_members_dialog'],st=self.ui,
+            get_members=lambda:pd.DataFrame(self.before['members']))
+        env['manage_members_dialog']()
+        self.assertTrue(any('重新新增同名' in text for text in captions))
+        self.assertTrue(any('既有訂單會保留' in text for text in warnings))
+        self.assertEqual(self.guard.export(),self.before)
