@@ -1664,7 +1664,7 @@ class TypedCustomAcceptance(IsolatedTest):
         c=self.meal('不要瓜類',size='無',spicy='小辣')
         self.assertEqual(self.key(a,'主餐'),self.key(b,'主餐'))
         self.assertNotEqual(self.key(a,'主餐'),self.key(c,'主餐'))
-        self.assertEqual(len(self.groups([a,b,c])),2)
+        self.assertEqual(len(self.groups([a,b,c])),1)
 
     def test_meal_empty_custom_does_not_merge_with_free_custom(self):
         rows=self.groups([self.meal('',size='無',spicy='無'),self.meal('加蛋',size='無',spicy='無')])
@@ -1940,3 +1940,112 @@ else:st.write('Fake saved')
         self.assertEqual((row['quantity'],row['price']),(2,200))
         self.assertEqual(app.session_state['remote'].put_calls,1)
         self.assertEqual(self.guard.status()['kind'],'success')
+
+
+class SemanticCustomAcceptance(IsolatedTest):
+    meal = TypedCustomAcceptance.meal
+    drink = TypedCustomAcceptance.drink
+    groups = TypedCustomAcceptance.groups
+
+    def setUp(self):
+        super().setUp()
+        self.codec = load_app_functions(['encode_order_custom', 'decode_order_custom', 'statistics_custom'])
+        self.encode = self.codec['encode_order_custom']; self.decode = self.codec['decode_order_custom']
+        self.options = {'main_size':['無','小份','大份'], 'spicy':['無','小辣','大辣'],
+                        'drink_size':['中杯','大杯'], 'sugar':['無糖','半糖'], 'ice':['去冰','正常冰']}
+
+    def test_three_meal_inputs_merge_with_one_label_and_correct_total(self):
+        rows = self.groups([self.meal('不要瓜類,小辣',spicy='無'),
+                            self.meal('小辣,不要瓜類',spicy=''), self.meal('不要瓜類')])
+        self.assertEqual(len(rows),1); self.assertIn('×3',rows[0])
+        self.assertIn('辣度：小辣',rows[0]); self.assertIn('客製：不要瓜類',rows[0])
+        self.assertIn(('本區總額','$360'), self.last_metrics)
+        self.assertTrue(any('共 3 份' in text for text in self.last_marks))
+
+    def test_manual_meal_size_matches_fixed_size(self):
+        self.assertEqual(len(self.groups([self.meal('加蛋'), self.meal('大份,加蛋',size='無')])),1)
+
+    def test_manual_drink_size_matches_fixed_size(self):
+        self.assertEqual(len(self.groups([self.drink('加椰果'),self.drink('大杯,加椰果',size='')],'飲料')),1)
+
+    def test_manual_drink_sugar_matches_fixed_sugar(self):
+        self.assertEqual(len(self.groups([self.drink('加椰果'),self.drink('無糖,加椰果',sugar='')],'飲料')),1)
+
+    def test_manual_drink_ice_matches_fixed_ice(self):
+        self.assertEqual(len(self.groups([self.drink('加椰果'),self.drink('去冰,加椰果',ice='')],'飲料')),1)
+
+    def test_all_fixed_fields_can_be_supplied_as_reordered_free_items(self):
+        for category, values in [('主餐',[self.meal('加蛋'),self.meal('小辣,加蛋,大份',size='無',spicy='無')]),
+                                 ('飲料',[self.drink('加椰果'),self.drink('去冰,大杯,加椰果,無糖',size='',sugar='',ice='')])]:
+            with self.subTest(category=category):
+                self.assertEqual(len(self.groups(values,category)),1)
+
+    def test_concrete_defaults_are_not_neutral(self):
+        # 無糖 is a real requirement even if selected as a UI default.
+        self.assertEqual(len(self.groups([self.drink(''),self.drink('半糖')],'飲料')),2)
+
+    def test_different_fixed_requirements_stay_separate(self):
+        for category, values in [('主餐',[self.meal(),self.meal(spicy='大辣'),self.meal(size='小份')]),
+                                 ('飲料',[self.drink(),self.drink(size='中杯'),self.drink(sugar='半糖'),self.drink(ice='正常冰')])]:
+            with self.subTest(category=category):
+                self.assertEqual(len(self.groups(values,category)),len(values))
+
+    def test_partial_matches_are_not_promoted(self):
+        self.assertEqual(len(self.groups([self.meal('不要小辣',spicy='無'), self.meal('不要',spicy='小辣')])),2)
+
+    def test_conflicting_fixed_and_free_values_do_not_merge_or_partially_promote(self):
+        raw = self.meal('大份,小辣',size='無',spicy='大辣')
+        self.assertEqual(self.codec['statistics_custom'](raw,'主餐',self.options),raw)
+        self.assertEqual(len(self.groups([raw,self.meal('',size='大份',spicy='小辣')])),2)
+
+    def test_duplicate_matching_tokens_are_preserved_and_not_promoted(self):
+        raw = self.meal('小辣,小辣,加蛋',spicy='無')
+        self.assertEqual(self.codec['statistics_custom'](raw,'主餐',self.options),raw)
+        self.assertEqual(len(self.groups([raw,self.meal('加蛋')])),2)
+
+    def test_fixed_plus_same_free_token_is_conservative_duplicate(self):
+        raw = self.meal('小辣,加蛋')
+        self.assertEqual(self.codec['statistics_custom'](raw,'主餐',self.options),raw)
+        self.assertEqual(len(self.groups([raw,self.meal('加蛋')])),2)
+
+    def test_option_shared_by_fields_is_not_guessed(self):
+        self.options['sugar'].append('共用'); self.options['ice'].append('共用')
+        raw = self.drink('共用',sugar='',ice='')
+        self.assertEqual(self.codec['statistics_custom'](raw,'飲料',self.options),raw)
+        self.assertEqual(len(self.groups([raw,self.drink('',sugar='共用',ice='')],'飲料')),2)
+
+    def test_retired_option_is_not_promoted_and_settings_refresh_is_immediate(self):
+        a=self.meal('小辣,加蛋',spicy='無'); b=self.meal('加蛋')
+        self.assertEqual(len(self.groups([a,b])),1)
+        self.options['spicy'].remove('小辣')
+        self.assertEqual(len(self.groups([a,b])),2)
+
+    def test_neutral_empty_and_other_custom_follow_existing_rules(self):
+        a=self.meal('',size='無',spicy='無'); b=self.meal('',size='',spicy='')
+        rows=self.groups([a,b,self.meal('加蛋',size='無',spicy='無')])
+        self.assertTrue(any('無客製 ×2' in row for row in rows));self.assertEqual(len(rows),2)
+
+    def test_legacy_text_is_never_reclassified(self):
+        raw='小辣,不要瓜類'
+        self.assertEqual(self.codec['statistics_custom'](raw,'主餐',self.options),raw)
+        self.assertEqual(len(self.groups([raw,self.meal('不要瓜類',size='無')])),2)
+
+    def test_normalization_preserves_input_and_is_order_independent(self):
+        a=self.drink('加椰果,去冰,無糖,大杯',size='',sugar='',ice='')
+        b=self.drink('加椰果'); original=self.decode(a,'飲料')
+        first=self.groups([a,b],'飲料');second=self.groups([b,a],'飲料')
+        self.assertEqual(first,second);self.assertEqual(self.decode(a,'飲料'),original)
+
+    def test_quick_tags_and_manual_items_share_exact_matching_rules(self):
+        a=self.meal('加蛋',size='無',spicy='無',tags=['大份','小辣'])
+        self.assertEqual(len(self.groups([a,self.meal('加蛋')])),1)
+
+    def test_multiple_different_free_values_for_one_field_are_not_guessed(self):
+        raw=self.drink('無糖,半糖,去冰',sugar='',ice='')
+        self.assertEqual(self.codec['statistics_custom'](raw,'飲料',self.options),raw)
+        self.assertEqual(len(self.groups([raw,self.drink('半糖')],'飲料')),2)
+
+    def test_ordinary_duplicate_free_items_survive_valid_promotion(self):
+        a=self.meal('小辣,加蛋,加蛋',spicy='無');b=self.meal('加蛋,加蛋')
+        rows=self.groups([a,b,self.meal('加蛋')])
+        self.assertEqual(len(rows),2);self.assertTrue(any('×2' in row and '加蛋・加蛋' in row for row in rows))

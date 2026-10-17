@@ -47,7 +47,7 @@ def load_app_functions(names, **env):
     if {node.name for node in functions} != set(names):
         raise AssertionError("missing app function")
     helpers = {"encode_order_custom", "decode_order_custom", "order_custom_items",
-               "display_order_custom", "order_custom_group_key", "edit_typed_custom"}
+               "display_order_custom", "order_custom_group_key", "edit_typed_custom", "statistics_custom"}
     functions += [node for node in tree.body if isinstance(node, ast.FunctionDef)
                   and node.name in helpers and node.name not in names]
     scope = {"sqlite3": sqlite3, "json": json, "base64": base64, "urllib": __import__("urllib"),
