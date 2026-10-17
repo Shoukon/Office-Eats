@@ -408,17 +408,12 @@ class PillsSessionStateTests(unittest.TestCase):
         self.assertEqual(ui.session_state['m_size'],'chosen')
         self.assertNotIn('_reset_m_size',ui.session_state)
 
-    def test_edit_main_pills_also_use_initialized_state_without_default(self):
+    def test_typed_edit_pills_also_use_initialized_state_without_default(self):
         tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
-        edit=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='edit_order_dialog')
-        found=[]
-        for call in ast.walk(edit):
-            if not isinstance(call,ast.Call) or not isinstance(call.func,ast.Attribute) or call.func.attr!='pills': continue
-            keys=[k.value for k in call.keywords if k.arg=='key']
-            if keys and isinstance(keys[0],ast.Name) and keys[0].id in ('size_key','spicy_key'):
-                self.assertFalse(any(k.arg=='default' for k in call.keywords))
-                found.append(keys[0].id)
-        self.assertEqual(set(found),{'size_key','spicy_key'})
+        edit=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='edit_typed_custom')
+        calls=[n for n in ast.walk(edit) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='pills']
+        self.assertEqual(len(calls),2)
+        for call in calls:self.assertFalse(any(k.arg=='default' for k in call.keywords))
 
 
 class DrinkDialogStateTests(IsolatedTest):
@@ -1024,7 +1019,8 @@ class DrinkPositionAcceptance(IsolatedTest):
     def test_stats_preserve_empty_positions_and_retired_text(self):
         tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
         parser=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='parse_stats_custom')
-        scope={'stats_values':lambda cat:{'drink_size':['M','L'],'sugar':['少糖','無糖'],'ice':['少冰','去冰']}[cat]}
+        scope=load_app_functions(['decode_order_custom'])
+        scope.update({'stats_values':lambda cat:{'drink_size':['M','L'],'sugar':['少糖','無糖'],'ice':['少冰','去冰']}[cat]})
         exec(compile(ast.Module(body=[parser],type_ignores=[]),str(SOURCE),'exec'),scope)
         for raw,weights in [('L//去冰',(1,0,1)),('/無糖/去冰',(99,1,1)),('L/無糖/',(1,1,0))]:
             with self.subTest(raw=raw):
@@ -1043,7 +1039,7 @@ class DrinkPositionAcceptance(IsolatedTest):
             'name':view['rows'][0][1],'generation':view['generation']}
         env.update(load_app_functions(['create_member_order'],**env))
         env.update(d_size='L',drink_size_options=['L'],d_sugar=None,d_ice='去冰',
-            d_price_unit=50,d_qty=2,d_name='Fake new drink',d_display_list=[],
+            d_price_unit=50,d_qty=2,d_name='Fake new drink',d_display_list=[],d_current_tags=[],d_current_manual='',
             taiwan_now=lambda:SimpleNamespace(strftime=lambda fmt:NOW))
         tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
         node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
@@ -1053,7 +1049,8 @@ class DrinkPositionAcceptance(IsolatedTest):
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),env)
         self.assertEqual(ui.errors,[])
         row=self.snapshot()['orders'][-1]
-        self.assertEqual((row['custom'],row['price'],row['quantity']),('L//去冰',100,2))
+        self.assertEqual(env['decode_order_custom'](row['custom'],'飲料')['fixed'],['L','','去冰'])
+        self.assertEqual((row['price'],row['quantity']),(100,2))
 
 
 class BackupNoticeRegression(IsolatedTest):
@@ -1167,7 +1164,7 @@ class StatsQueryCountTests(IsolatedTest):
 
     def render(self, count, category='主餐'):
         row=fixture()['orders'][0]; row.update(category=category,
-            custom='無, 微辣' if category=='主餐' else 'L//去冰')
+            custom=self.env['encode_order_custom']('主餐',['無','微辣'],[],'') if category=='主餐' else 'L//去冰')
         self.env['get_orders_df']=lambda:pd.DataFrame([dict(row,id=i+1) for i in range(count)])
         self.env['render_stats_section']()
 
@@ -1438,8 +1435,11 @@ class EntryFragmentAcceptance(IsolatedTest):
             self.ui.clicked={label}; puts=self.remote.put_calls
             with self.assertRaises(EntryRerun): self.render()
             row=self.snapshot()['orders'][-1]
-            self.assertEqual((row['category'],row['price'],row['unit_price'],row['quantity'],row['custom']),
-                             (category,405,135,3,custom))
+            self.assertEqual((row['category'],row['price'],row['unit_price'],row['quantity']),
+                             (category,405,135,3))
+            parsed=self.env['decode_order_custom'](row['custom'],category)
+            self.assertEqual(parsed['manual'],'Fake meal custom' if prefix=='m' else 'Fake drink custom')
+            self.assertEqual(parsed['fixed'],['無','無'] if prefix=='m' else ['L','無糖','去冰'])
             self.assertEqual(self.remote.put_calls,puts+1)
             self.assertEqual(self.guard.status()['kind'],'success')
             self.ui.clicked.clear(); self.render()
@@ -1604,3 +1604,339 @@ elif request=='d_custom':env['open_drink_custom_dialog'](env['get_options']('dri
         self.assertEqual(app.number_input(key='d_price').value,75)
         self.assertEqual(app.session_state['d_custom_manual'],'')
         self.assertEqual(app.session_state['remote'].put_calls,0)
+
+
+class TypedCustomAcceptance(IsolatedTest):
+    """STAT-01: explicit provenance; no conversion of unmarked historical text."""
+    def setUp(self):
+        super().setUp()
+        self.codec=load_app_functions(['encode_order_custom','decode_order_custom',
+            'display_order_custom','order_custom_items','order_custom_group_key'])
+        self.encode=self.codec['encode_order_custom'];self.decode=self.codec['decode_order_custom']
+        self.key=self.codec['order_custom_group_key']
+        self.options={'main_size':['無','小份','大份'],'spicy':['無','小辣','大辣'],
+            'drink_size':['中杯','大杯'],'sugar':['無糖','半糖'],'ice':['去冰','正常冰']}
+
+    def meal(self,manual='',size='大份',spicy='小辣',tags=None):
+        return self.encode('主餐',[size,spicy],tags or [],manual)
+
+    def drink(self,manual='',size='大杯',sugar='無糖',ice='去冰',tags=None):
+        return self.encode('飲料',[size,sugar,ice],tags or [],manual)
+
+    def groups(self,customs,category='主餐',names=None):
+        data=fixture();base=data['orders'][0]
+        data['orders']=[dict(base,id=i+1,custom=custom,category=category,price=100+i*20,
+            unit_price=100+i*20,item_name=names[i] if names else 'Fake item') for i,custom in enumerate(customs)]
+        self.ready(data);before=self.snapshot();ui=FakeUI();marks=[];metrics=[]
+        ui.markdown=lambda text,**kw:marks.append(text)
+        ui.metric=lambda label,value,**kw:metrics.append((label,value))
+        env=load_app_functions(['render_stats_section'],st=ui,pd=pd,html=__import__('html'),
+            get_orders_df=lambda:pd.DataFrame(self.snapshot()['orders']),
+            get_options=lambda cat:self.options.get(cat,[]),
+            get_current_shop_names=lambda:{'main':'Fake main','drink':'Fake drink'},taiwan_now_str=lambda:NOW)
+        env['render_stats_section']()
+        self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        rows=[m for m in marks if m.startswith('<div class="custom-text">') and ' ×' in m]
+        self.last_marks=marks;self.last_metrics=metrics
+        return rows
+
+    def test_meal_same_fixed_and_reordered_free_items_merge(self):
+        rows=self.groups([self.meal('不要瓜類,加蛋'),self.meal('加蛋,不要瓜類')])
+        self.assertEqual(len(rows),1);self.assertIn('×2',rows[0])
+        self.assertIn(('本區總額','$220'),self.last_metrics)
+
+    def test_meal_different_size_stays_separate(self):
+        self.assertEqual(len(self.groups([self.meal('加蛋'),self.meal('加蛋',size='小份')])),2)
+
+    def test_meal_different_spicy_stays_separate(self):
+        self.assertEqual(len(self.groups([self.meal('加蛋'),self.meal('加蛋',spicy='大辣')])),2)
+
+    def test_meal_different_name_stays_separate(self):
+        self.assertEqual(len(self.groups([self.meal('加蛋')]*2,names=['Fake A','Fake B'])),2)
+
+    def test_meal_different_free_items_stay_separate(self):
+        self.assertEqual(len(self.groups([self.meal('加蛋'),self.meal('不要瓜類')])),2)
+
+    def test_meal_manual_spicy_is_never_promoted_to_fixed_field(self):
+        a=self.meal('小辣,不要瓜類',size='無',spicy='無')
+        b=self.meal('不要瓜類,小辣',size='無',spicy='無')
+        c=self.meal('不要瓜類',size='無',spicy='小辣')
+        self.assertEqual(self.key(a,'主餐'),self.key(b,'主餐'))
+        self.assertNotEqual(self.key(a,'主餐'),self.key(c,'主餐'))
+        self.assertEqual(len(self.groups([a,b,c])),2)
+
+    def test_meal_empty_custom_does_not_merge_with_free_custom(self):
+        rows=self.groups([self.meal('',size='無',spicy='無'),self.meal('加蛋',size='無',spicy='無')])
+        self.assertEqual(len(rows),2);self.assertTrue(any('無客製 ×1' in r for r in rows))
+
+    def test_drink_same_fixed_and_reordered_free_items_merge(self):
+        rows=self.groups([self.drink('不要珍珠,加椰果'),self.drink('加椰果,不要珍珠')],'飲料')
+        self.assertEqual(len(rows),1);self.assertIn('×2',rows[0])
+        self.assertIn(('本區總額','$220'),self.last_metrics)
+
+    def test_drink_different_size_stays_separate(self):
+        self.assertEqual(len(self.groups([self.drink('加椰果'),self.drink('加椰果',size='中杯')],'飲料')),2)
+
+    def test_drink_different_sugar_stays_separate(self):
+        self.assertEqual(len(self.groups([self.drink('加椰果'),self.drink('加椰果',sugar='半糖')],'飲料')),2)
+
+    def test_drink_different_ice_stays_separate(self):
+        self.assertEqual(len(self.groups([self.drink('加椰果'),self.drink('加椰果',ice='正常冰')],'飲料')),2)
+
+    def test_drink_different_name_stays_separate(self):
+        self.assertEqual(len(self.groups([self.drink('加椰果')]*2,'飲料',['Fake A','Fake B'])),2)
+
+    def test_drink_empty_slots_preserve_position_and_group_identity(self):
+        for fixed in [('', '無糖','去冰'),('大杯','','去冰'),('大杯','無糖',''),('','','')]:
+            with self.subTest(fixed=fixed):
+                raw=self.encode('飲料',fixed,[],'')
+                self.assertEqual(self.decode(raw,'飲料')['fixed'],list(fixed))
+                self.assertNotEqual(self.key(raw,'飲料'),self.key(self.drink(),'飲料'))
+
+    def test_drink_empty_custom_does_not_merge_with_free_custom(self):
+        a=self.encode('飲料',['','',''],[],'');b=self.encode('飲料',['','',''],[],'加椰果')
+        rows=self.groups([a,b],'飲料');self.assertEqual(len(rows),2)
+        self.assertTrue(any('無客製 ×1' in r for r in rows))
+
+    def test_free_whitespace_trimmed_but_punctuation_and_fullwidth_comma_literal(self):
+        self.assertEqual(self.key(self.meal(' 加蛋 , 不要瓜類 '),'主餐'),self.key(self.meal('不要瓜類,加蛋'),'主餐'))
+        self.assertNotEqual(self.key(self.meal('加蛋，不要瓜類'),'主餐'),self.key(self.meal('加蛋,不要瓜類'),'主餐'))
+        self.assertNotEqual(self.key(self.meal('A・B'),'主餐'),self.key(self.meal('A,B'),'主餐'))
+        self.assertEqual(self.decode(self.meal('A/B，C!'),'主餐')['manual'],'A/B，C!')
+
+    def test_duplicate_items_preserved_across_tags_manual_and_normalization(self):
+        a=self.meal('加蛋,不要瓜類',tags=['加蛋']);b=self.meal('不要瓜類,加蛋,加蛋')
+        self.assertEqual(self.key(a,'主餐'),self.key(b,'主餐'))
+        self.assertNotEqual(self.key(a,'主餐'),self.key(self.meal('加蛋,不要瓜類'),'主餐'))
+        self.assertEqual(len(self.groups([a,b])),1)
+
+    def test_batch_input_order_does_not_change_summary(self):
+        a=self.meal('加蛋,不要瓜類');b=self.meal('不要瓜類,加蛋')
+        first=self.groups([a,b,a,b]);second=self.groups([b,a,b,a])
+        self.assertEqual(first,second);self.assertIn('×4',first[0])
+
+    def test_legacy_is_opaque_and_never_merged_with_typed_provenance(self):
+        a='小辣, 不要瓜類';b='不要瓜類, 小辣'
+        self.assertIsNone(self.decode(a,'主餐'))
+        self.assertEqual(self.codec['display_order_custom'](a,'主餐'),a)
+        self.assertNotEqual(self.key(a,'主餐'),self.key(b,'主餐'))
+        self.assertEqual(len(self.groups([a,b,self.meal('不要瓜類',size='無')])),3)
+
+    def test_marker_schema_unknown_version_and_literal_marker_are_not_confused(self):
+        import json
+        for raw in ['@OfficeEats.Custom/v2:{}','@OfficeEats.Custom/v1:{}',
+                    '@OfficeEats.Custom/v1:{"v":1,"v":1}', '@OfficeEats.Custom/v1:not-json']:
+            self.assertIsNone(self.decode(raw,'主餐'))
+            self.assertEqual(self.codec['display_order_custom'](raw,'主餐'),raw)
+        good=self.meal('A');self.assertIsNone(self.decode(good,'飲料'))
+        for fixed,tags,manual in [(['大份'],[],''),(['大份','小辣'],[1],''),(['大份','小辣'],[],'')]:
+            if tags or len(fixed)!=2:
+                with self.assertRaises(ValueError):self.encode('主餐',fixed,tags,manual)
+        nested=self.meal(good)
+        self.assertEqual(self.decode(nested,'主餐')['manual'],good)
+
+    def test_typed_edit_preserves_manual_source_retired_fields_duplicates_and_empty_slots(self):
+        for cat,raw in [('主餐',self.meal('小辣, 不要瓜類',size='舊大份',spicy='舊辣',tags=['舊標籤','舊標籤'])),
+                        ('飲料',self.drink('加椰果',size='舊大杯',sugar='',ice='舊冰',tags=['舊標籤']))]:
+            with self.subTest(cat=cat):
+                data=fixture();data['orders'][0].update(category=cat,custom=raw);self.ready(data)
+                harness=OrderUIIntegrationTests();harness.guard=self.guard
+                for repeat in range(2):
+                    token=self.guard.order_token(self.guard.order_snapshot(),[1]);ui=FakeUI()
+                    env=harness.env(ui,[]);ui.clicked={'💾 儲存修改'};ui.text_values['數量']=2
+                    env['edit_order_dialog'](1,cat,'Fake',100,1,raw,token)
+                    self.assertEqual(ui.errors,[])
+                    self.assertEqual(self.snapshot()['orders'][0]['custom'],raw)
+
+    def test_legacy_meal_amount_edit_preserves_exact_raw_text_without_guessing(self):
+        raw='  小辣,  不要瓜類，保留標點  '
+        data=fixture();data['orders'][0]['custom']=raw;self.ready(data)
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();env=harness.env(ui,[])
+        ui.clicked={'💾 儲存修改'};ui.text_values['數量']=2
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        env['edit_order_dialog'](1,'主餐','Fake',100,1,raw,token)
+        self.assertEqual(self.snapshot()['orders'][0]['custom'],raw)
+        self.assertFalse(any(str(k).startswith('edit_m_spicy') for k in ui.session_state))
+
+    def test_payment_undo_delete_preserve_encoded_other_order_and_token_guards(self):
+        data=fixture();data['orders'][0]['custom']=self.meal('加蛋,小辣')
+        data['orders'].append(dict(data['orders'][0],id=2,custom=self.drink('加椰果'),category='飲料'))
+        self.ready(data);other=self.snapshot()['orders'][1]
+        for action in ['payment','undo_payment']:
+            token=self.guard.order_token(self.guard.order_snapshot(),[1])
+            self.assertEqual(self.guard.apply_order_action(action,token),1)
+            self.assertEqual(self.snapshot()['orders'][0]['custom'],data['orders'][0]['custom'])
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        self.assertEqual(self.guard.apply_order_action('delete',token),1)
+        self.assertEqual(self.snapshot()['orders'],[other])
+        with self.assertRaises(OrderConflict):self.guard.apply_order_action('delete',token)
+
+    def test_backup_json_fernet_roundtrip_restore_preserves_new_and_legacy_without_schema_change(self):
+        from cryptography.fernet import Fernet,InvalidToken
+        import json
+        data=fixture();data['orders'][0]['custom']=self.meal('小辣,加蛋',tags=['加蛋'])
+        data['orders'].append(dict(data['orders'][0],id=2,category='飲料',custom='L//去冰, 舊文字'))
+        remote=self.ready(data);snapshot=self.snapshot()
+        from backup_safety import parse_backup
+        parsed_json=parse_backup(json.dumps(snapshot,ensure_ascii=False).encode('utf-8'))
+        generation=self.guard.order_snapshot()['generation']
+        self.assertTrue(self.guard.transfer(True,remote.get,remote.put,imported=parsed_json))
+        self.assertNotEqual(self.guard.order_snapshot()['generation'],generation)
+        self.assertEqual(self.snapshot()['orders'],snapshot['orders'])
+        # Existing import protection deliberately renews member IDs/generation.
+        snapshot=self.snapshot()
+        key=Fernet.generate_key()
+        env=load_app_functions(['encrypt_github_backup','decrypt_github_backup'],Fernet=Fernet,InvalidToken=InvalidToken,
+            get_github_settings=lambda:('fake','fake','fake','fake','fake',key.decode()))
+        restored=env['decrypt_github_backup'](env['encrypt_github_backup'](snapshot))
+        self.assertEqual(restored['version'],'4.1');self.assertEqual(restored['orders'],snapshot['orders'])
+        fresh=BackupGuard(self.db.parent/'restored-fake.db',lambda:NOW);fresh.prepare(schema)
+        fake=FakeRemote(restored);self.assertEqual(fresh.startup(True,fake.get),'restored')
+        self.assertEqual(fresh.export()['orders'],snapshot['orders'])
+        conn=fresh.connect()
+        try:self.assertEqual([r[1] for r in conn.execute('PRAGMA table_info(orders)')],list(ORDER_FIELDS))
+        finally:conn.close()
+        self.assertEqual(self.snapshot(),snapshot);self.assertEqual(fake.put_calls,0)
+
+    def test_personal_and_payment_views_hide_envelope_but_preserve_free_text_order(self):
+        raw=self.meal('Z,A',size='無',spicy='無')
+        data=fixture();data['orders'][0]['custom']=raw;self.ready(data)
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();marks=[]
+        ui.markdown=lambda text,**kw:marks.append(text);env=harness.env(ui,[])
+        env['render_my_orders']('測試甲');view=self.guard.order_snapshot()
+        env['_pay_logic_grouped']('主餐',pd.DataFrame(view['rows'],columns=ORDER_FIELDS),'main',view)
+        self.assertTrue(any('客製：Z・A' in m for m in marks))
+        self.assertFalse(any('@OfficeEats.Custom/' in m for m in marks))
+        self.assertEqual(self.snapshot()['orders'][0]['custom'],raw)
+
+
+    def test_typed_drink_clear_sugar_reopens_without_moving_ice(self):
+        raw=self.drink('A/B',size='L')
+        data=fixture();data['orders'][0].update(category='飲料',custom=raw);self.ready(data)
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();env=harness.env(ui,[])
+        token=self.guard.order_token(self.guard.order_snapshot(),[1]);key=f"edit_v1_sugar_1_{token['generation']}"
+        env['edit_order_dialog'](1,'飲料','Fake',100,1,raw,token)
+        ui.session_state[key]=None;ui.clicked={'💾 儲存修改'}
+        env['edit_order_dialog'](1,'飲料','Fake',100,1,raw,token)
+        stored=self.snapshot()['orders'][0]['custom']
+        self.assertEqual(self.decode(stored,'飲料')['fixed'],['L','','去冰'])
+        fresh=FakeUI();token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        harness.env(fresh,[])['edit_order_dialog'](1,'飲料','Fake',100,1,stored,token)
+        self.assertIsNone(fresh.session_state[f"edit_v1_sugar_1_{token['generation']}"])
+        self.assertEqual(fresh.session_state[f"edit_v1_ice_1_{token['generation']}"],'去冰')
+
+    def test_typed_meal_manual_spicy_remains_manual_on_edit(self):
+        raw=self.meal('小辣,不要瓜類',size='無',spicy='無')
+        data=fixture();data['orders'][0]['custom']=raw;self.ready(data)
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();env=harness.env(ui,[])
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        env['edit_order_dialog'](1,'主餐','Fake',100,1,raw,token)
+        self.assertEqual(ui.session_state[f"edit_v1_spicy_1_{token['generation']}"],'無')
+        ui.clicked={'💾 儲存修改'};env['edit_order_dialog'](1,'主餐','Fake',100,1,raw,token)
+        self.assertEqual(self.snapshot()['orders'][0]['custom'],raw)
+
+    def test_cleared_typed_meal_required_size_rejects_without_writing_or_sync(self):
+        raw=self.meal('A');data=fixture();data['orders'][0]['custom']=raw;self.ready(data)
+        before=self.snapshot();harness=OrderUIIntegrationTests();harness.guard=self.guard
+        ui=FakeUI();synced=[];env=harness.env(ui,synced)
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        env['edit_order_dialog'](1,'主餐','Fake',100,1,raw,token)
+        ui.session_state[f"edit_v1_main_size_1_{token['generation']}"]=None
+        ui.clicked={'💾 儲存修改'};env['edit_order_dialog'](1,'主餐','Fake',100,1,raw,token)
+        self.assertTrue(ui.errors);self.assertEqual(self.snapshot(),before);self.assertEqual(synced,[])
+
+    def test_legacy_drink_quantity_edit_preserves_exact_whitespace_and_duplicates(self):
+        raw=' L//去冰,  加珍珠,加珍珠  '
+        data=fixture();data['orders'][0].update(category='飲料',custom=raw);self.ready(data)
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();env=harness.env(ui,[])
+        token=self.guard.order_token(self.guard.order_snapshot(),[1]);ui.clicked={'💾 儲存修改'};ui.text_values['數量']=2
+        env['edit_order_dialog'](1,'飲料','Fake',100,1,raw,token)
+        self.assertEqual(self.snapshot()['orders'][0]['custom'],raw)
+
+    def test_typed_payment_display_preserves_free_slashes_and_escapes_html(self):
+        raw=self.drink('A/B, <b>Fake</b>')
+        data=fixture();data['orders'][0].update(category='飲料',custom=raw);self.ready(data)
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();marks=[]
+        ui.markdown=lambda text,**kw:marks.append(text);env=harness.env(ui,[]);view=self.guard.order_snapshot()
+        env['_pay_logic_grouped']('飲料',pd.DataFrame(view['rows'],columns=ORDER_FIELDS),'drink',view)
+        text=''.join(marks);self.assertIn('A/B',text);self.assertIn('&lt;b&gt;Fake&lt;/b&gt;',text)
+        self.assertNotIn('<b>Fake</b>',text);self.assertNotIn('@OfficeEats.Custom/',text)
+
+    def test_strict_typed_schema_rejects_wrong_types_extra_keys_and_noncanonical_data(self):
+        import json
+        good=self.decode(self.meal(),'主餐')
+        for change in [{'v':True},{'v':2},{'fixed':['A']},{'tags':[1]},{'manual':None},{'extra':'no'}]:
+            data=dict(good);data.update(change)
+            raw='@OfficeEats.Custom/v1:'+json.dumps(data,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            self.assertIsNone(self.decode(raw,'主餐'))
+        raw='@OfficeEats.Custom/v1:'+json.dumps(good,ensure_ascii=False,indent=2)
+        self.assertIsNone(self.decode(raw,'主餐'))
+
+    def test_whitespace_wrapped_literal_envelope_is_not_promoted_by_stats(self):
+        good=self.meal('A');literal=' '+good+' '
+        self.assertIsNone(self.decode(literal,'主餐'))
+        rows=self.groups([good,literal])
+        self.assertEqual(len(rows),2)
+        self.assertTrue(any('歷史：' in row for row in rows))
+
+
+    def test_legacy_drink_native_unique_selection_does_not_drop_duplicate_tags(self):
+        raw='L/無糖/去冰, 加珍珠, 加珍珠'
+        data=fixture();data['orders'][0].update(category='飲料',custom=raw);self.ready(data)
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();env=harness.env(ui,[])
+        env['custom_tags_drink']=['加珍珠']
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        env['edit_order_dialog'](1,'飲料','Fake',100,1,raw,token)
+        ui.session_state[f"edit_d_tags_widget_1_{token['generation']}"]=['加珍珠']
+        ui.clicked={'💾 儲存修改'};ui.text_values['數量']=2
+        env['edit_order_dialog'](1,'飲料','Fake',100,1,raw,token)
+        self.assertEqual(self.snapshot()['orders'][0]['custom'],raw)
+
+
+
+class TypedCustomAppTests(IsolatedTest):
+    def test_native_typed_editor_saves_quantity_manual_and_empty_sugar_without_reclassification(self):
+        codec=load_app_functions(['encode_order_custom','decode_order_custom'])
+        raw=codec['encode_order_custom']('飲料',['舊大杯','','去冰'],['舊標籤','舊標籤'],'A/B')
+        data=fixture();data['orders'][0].update(category='飲料',custom=raw);self.ready(data)
+        import tempfile
+        previous=tempfile.tempdir;tempfile.tempdir=str(self.db.parent)
+        try:
+            from streamlit.testing.v1 import AppTest
+        finally:tempfile.tempdir=previous
+        script="""import streamlit as st
+import pandas as pd
+import sqlite3,time,html
+from backup_safety import BackupGuard,OrderConflict
+from test_backup_safety import load_app_functions,FakeRemote,NOW
+G=BackupGuard(DB,lambda:NOW)
+if 'remote' not in st.session_state:st.session_state['remote']=FakeRemote(G.export())
+remote=st.session_state['remote']
+st.session_state.setdefault('show_edit',True)
+def sync(show_error=False):
+ ok=G.transfer(True,remote.get,remote.put)
+ st.session_state['show_edit']=False
+ return ok
+env=load_app_functions(['edit_order_dialog','execute_order_action','save_and_sync','show_save_feedback'],
+ st=st,pd=pd,html=html,backup_guard=G,OrderConflict=OrderConflict,sync_github_backup=sync,
+ get_options=lambda cat:{'drink_size':['L'],'sugar':['無糖'],'ice':['去冰'],'drink_tags':[]}.get(cat,[]))
+if st.session_state['show_edit']:
+ token=G.order_token(G.order_snapshot(),[1]);row=G.expected_order(token)
+ env['edit_order_dialog'](1,'飲料',row['item_name'],row['price'],row['quantity'],row['custom'],token)
+else:st.write('Fake saved')
+"""
+        path=self.db.parent/'fake_typed_editor.py';path.write_text('DB='+repr(str(self.db))+'\n'+script,encoding='utf-8')
+        app=AppTest.from_file(str(path));app.secrets={'fake_only':True};app.run()
+        self.assertEqual(len(app.exception),0)
+        app.number_input[1].set_value(2)
+        app.text_input(key=f"edit_v1_manual_1_{self.guard.order_snapshot()['generation']}").set_value('小辣, A/B')
+        next(b for b in app.button if b.label=='💾 儲存修改').click()
+        EntryFragmentAppTests.run_app(self,app)
+        self.assertEqual(len(app.exception),0)
+        row=self.snapshot()['orders'][0];parsed=codec['decode_order_custom'](row['custom'],'飲料')
+        self.assertEqual(parsed['fixed'],['舊大杯','','去冰'])
+        self.assertEqual(parsed['manual'],'小辣, A/B');self.assertEqual(parsed['tags'],['舊標籤','舊標籤'])
+        self.assertEqual((row['quantity'],row['price']),(2,200))
+        self.assertEqual(app.session_state['remote'].put_calls,1)
+        self.assertEqual(self.guard.status()['kind'],'success')

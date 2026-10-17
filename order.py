@@ -353,6 +353,102 @@ def github_put_backup(data,sha):
         raise  # ambiguous response: caller must reconcile with GET, not retry PUT
 
 
+def encode_order_custom(category, fixed, tags, manual):
+    """Versioned custom TEXT only; the backup envelope/schema stays unchanged."""
+    count = 2 if category == "主餐" else 3 if category == "飲料" else 0
+    if (not count or not isinstance(fixed, (list, tuple)) or len(fixed) != count
+            or any(value is not None and not isinstance(value, str) for value in fixed)
+            or not isinstance(tags, list) or any(not isinstance(value, str) for value in tags)
+            or not isinstance(manual, str)):
+        raise ValueError("客製欄位格式錯誤")
+    payload = {"v": 1, "category": category,
+               "fixed": [value if value is not None else "" for value in fixed],
+               "tags": tags, "manual": manual}
+    return "@OfficeEats.Custom/v1:" + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def decode_order_custom(raw, category):
+    """Only exact canonical envelopes are typed. Other text stays opaque legacy."""
+    prefix = "@OfficeEats.Custom/v1:"
+    if not isinstance(raw, str) or not raw.startswith(prefix):
+        return None
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result: raise ValueError("duplicate custom field")
+            result[key] = value
+        return result
+    try:
+        data = json.loads(raw[len(prefix):], object_pairs_hook=unique_pairs)
+        if (not isinstance(data, dict) or set(data) != {"v", "category", "fixed", "tags", "manual"}
+                or type(data["v"]) is not int or data["v"] != 1 or data["category"] != category
+                or encode_order_custom(category, data["fixed"], data["tags"], data["manual"]) != raw):
+            return None
+        return data
+    except (ValueError, TypeError, KeyError, RecursionError):
+        return None
+
+
+def order_custom_items(data, normalize=False):
+    # Only ASCII comma was an item separator in the existing format. Fullwidth
+    # commas, slashes and other punctuation inside free text remain literal.
+    items = [part.strip() for text in data["tags"] + [data["manual"]]
+             for part in text.split(",") if part.strip()]
+    return sorted(items) if normalize else items  # never deduplicate
+
+
+def display_order_custom(raw, category, normalized=False):
+    data = decode_order_custom(raw, category)
+    if data is None:
+        return str(raw or "")  # never parse/reclassify an unmarked main order
+    labels = ("尺寸", "辣度") if category == "主餐" else ("尺寸", "甜度", "冰塊")
+    parts = [f"{label}：{value}" for label, value in zip(labels, data["fixed"])
+             if value and not (category == "主餐" and value == "無")]
+    free = order_custom_items(data, normalized)
+    if free: parts.append("客製：" + "・".join(free))
+    return "・".join(parts)
+
+
+def order_custom_group_key(raw, category):
+    data = decode_order_custom(raw, category)
+    if data is None:
+        key = ["legacy", category, str(raw or "")]
+    else:
+        key = ["v1", category, data["fixed"], order_custom_items(data, True)]
+    return json.dumps(key, ensure_ascii=False, separators=(",", ":"))
+
+
+def edit_typed_custom(data, edit_key):
+    category = data["category"]
+    fields = (("尺寸（必選）", "main_size"), ("辣度", "spicy")) if category == "主餐" else (
+        ("尺寸", "drink_size"), ("甜度", "sugar"), ("冰塊", "ice"))
+    selected = []
+    for (label, option_category), original in zip(fields, data["fixed"]):
+        options = list(get_options(option_category))
+        if original and original not in options:
+            options.append(original)
+            st.caption(f"{label}原選項「{original}」已停用；未更改時保留原值。")
+        key = f"edit_v1_{option_category}_{edit_key}"
+        if key not in st.session_state: st.session_state[key] = original or None
+        value = st.session_state[key]
+        if value and value not in options: options.append(value)
+        selected.append(st.pills(label, options, key=key, selection_mode="single") if options else None)
+    tag_options = list(get_options("tags" if category == "主餐" else "drink_tags"))
+    for tag in data["tags"]:
+        if tag not in tag_options: tag_options.append(tag)
+    tags_key = f"edit_v1_tags_{edit_key}"
+    if tags_key not in st.session_state:
+        st.session_state[tags_key] = list(dict.fromkeys(data["tags"]))
+    chosen = st.pills("常用客製需求（可複選）", tag_options, key=tags_key,
+                      selection_mode="multi") if tag_options else []
+    # Native pills select a tag once; retain original multiplicity for retained
+    # tags, and add a newly selected tag once. No set-based loss of duplicates.
+    tags = [tag for tag in data["tags"] if tag in (chosen or [])]
+    tags.extend(tag for tag in (chosen or []) if tag not in data["tags"])
+    manual = st.text_input("其他客製需求", value=data["manual"], key=f"edit_v1_manual_{edit_key}")
+    return encode_order_custom(category, selected, tags, manual)
+
+
 def serialize_drink_options(size, sugar, ice):
     """Keep the existing slash format, including empty positional fields."""
     values=[str(value).strip() if value is not None else "" for value in (size,sugar,ice)]
@@ -1046,6 +1142,15 @@ def render_stats_section():
 
         只改統計看板的顯示與排序，不修改資料庫原始 custom。
         """
+        typed = decode_order_custom(str(raw_custom or ""), category)
+        if typed is not None:
+            categories = ("main_size", "spicy") if category == "主餐" else ("drink_size", "sugar", "ice")
+            fallbacks = (0, 0) if category == "主餐" else (99, 0, 0)
+            weights = [stats_values(cat).index(value) if value in stats_values(cat) else fallback
+                       for cat, value, fallback in zip(categories, typed["fixed"], fallbacks)]
+            if category == "主餐": weights.append(0)
+            return (display_order_custom(raw_custom, category, True), *weights,
+                    json.dumps(order_custom_items(typed, True), ensure_ascii=False))
         raw = str(raw_custom or "").strip()
         if not raw:
             return "", 0, 0, 0, ""
@@ -1053,36 +1158,8 @@ def render_stats_section():
         parts = [p.strip() for p in raw.split(",") if p is not None and p.strip()]
 
         if category == "主餐":
-            main_sizes=stats_values("main_size")
-            spicy_options=stats_values("spicy")
-            size_order={value:idx for idx,value in enumerate(main_sizes)}
-            spicy_order={value:idx for idx,value in enumerate(spicy_options)}
-
-            size = ""
-            spicy = ""
-
-            # 新格式：尺寸, 辣度, 其他客製
-            if parts and parts[0] in size_order:
-                size = parts.pop(0)
-
-            # 新格式（無尺寸）或舊格式：第一個欄位直接是辣度。
-            if parts and parts[0] in spicy_order:
-                spicy = parts.pop(0)
-
-            display_parts = []
-            if size:
-                display_parts.append(size)
-            if spicy:
-                display_parts.append(spicy)
-            display_parts.extend(parts)
-
-            return (
-                "・".join(display_parts),
-                size_order.get(size, 0),
-                spicy_order.get(spicy, 0),
-                0,
-                "・".join(parts),
-            )
+            # Unmarked comma text has no reliable main-field boundaries.
+            return "歷史：" + "・".join(parts), 99, 99, 0, raw
 
         if category == "飲料":
             drink_sizes=stats_values("drink_size")
@@ -1092,60 +1169,17 @@ def render_stats_section():
             sugar_order={value:idx for idx,value in enumerate(sugar_options)}
             ice_order={value:idx for idx,value in enumerate(ice_options)}
 
-            # 飲料儲存格式是：
-            # 尺寸/甜度/冰塊[, 其他客製]
-            # 例如：飲料尺寸/甜度/冰塊
-            #       飲料尺寸/甜度/冰塊, 加珍珠
-            #
-            # 3.9.8 錯誤地只用逗號切割，導致整個
-            # 「飲料尺寸/甜度/冰塊」被當成一個未知欄位，
-            # 因而尺寸權重全部失效。這裡按照實際資料格式解析。
-            base_part, separator, tag_part = raw.partition(",")
-            base_values = [
-                value.strip()
-                for value in base_part.split("/")
-            ]
-
-            size = base_values[0] if base_values and base_values[0] in size_order else ""
-            sugar = base_values[1] if len(base_values) > 1 and base_values[1] in sugar_order else ""
-            ice = base_values[2] if len(base_values) > 2 and base_values[2] in ice_order else ""
-
-            recognized_count = sum(
-                value is not None and bool(value)
-                for value in (size, sugar, ice)
-            )
-
-            # 保留任何未被辨識的基本欄位，避免舊資料或手動資料在看板上消失。
-            recognized_base_values = [
-                value for value in (size, sugar, ice) if value
-            ]
-            unknown_base_values = [
-                value for value in base_values
-                if value and value not in recognized_base_values
-            ]
-            extra_parts = unknown_base_values + (
-                [
-                    value.strip()
-                    for value in tag_part.split(",")
-                    if value is not None and value.strip()
-                ] if separator else []
-            )
-
-            if not recognized_count and not extra_parts:
-                extra_parts = parts
-
-            # 與主餐統一：所有基本設定與客製項目都用「・」分隔。
-            # 例如：飲料尺寸・甜度・冰塊・加珍珠
-            display_parts = [value for value in (size, sugar, ice) if value]
-            display_parts.extend(extra_parts)
-
-            return (
-                "・".join(display_parts),
-                size_order.get(size, 99),
-                sugar_order.get(sugar, 0),
-                ice_order.get(ice, 0),
-                "・".join(extra_parts),
-            )
+            # Legacy slash text retains its positional layout, including empty
+            # slots and retired values. Never promote comma-only text by name.
+            base, separator, tail = raw.partition(",")
+            if "/" not in base or raw.startswith("@OfficeEats.Custom/"):
+                return "歷史：" + "・".join(parts), 99, 0, 0, raw
+            values = [value.strip() for value in base.split("/")]
+            fixed = (values + ["", "", ""])[:3]
+            extras = values[3:] + ([p.strip() for p in tail.split(",")] if separator else [])
+            display = "・".join(value for value in fixed + extras if value)
+            return ("歷史：" + display, size_order.get(fixed[0], 99),
+                    sugar_order.get(fixed[1], 0), ice_order.get(fixed[2], 0), raw)
 
         return raw, 99, 99, 99, raw
 
@@ -1186,12 +1220,9 @@ def render_stats_section():
             .astype(str)
             .str.strip()
         )
-        df_source['custom'] = (
-            df_source['custom']
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
+        # Keep exact bytes for marker recognition and legacy identity. Trimming
+        # before decoding could accidentally promote a legacy literal envelope.
+        df_source['custom'] = df_source['custom'].fillna("").astype(str)
 
         # 店家看板只改「顯示內容」，不改資料庫原始 custom。
         stats_parsed = df_source.apply(
@@ -1207,6 +1238,8 @@ def render_stats_section():
             "stats_order_4",
         ]
         df_source = pd.concat([df_source, stats_parsed], axis=1)
+        df_source["stats_key"] = df_source.apply(
+            lambda row: order_custom_group_key(row["custom"], row["category"]), axis=1)
 
         c_sum, c_det = st.columns([1, 1.2])
 
@@ -1246,6 +1279,7 @@ def render_stats_section():
                             item_group[item_group["stats_custom"] != ""]
                             .groupby(
                                 [
+                                    "stats_key",
                                     "stats_custom",
                                     "stats_order_1",
                                     "stats_order_2",
@@ -1309,7 +1343,7 @@ def render_stats_section():
                         safe_item = html.escape(str(row["item_name"]))
                         safe_cst_html = ""
                         if row['stats_custom']:
-                            safe_cst = html.escape(str(row['stats_custom']))
+                            safe_cst = html.escape(display_order_custom(row['custom'], row['category']))
                             safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                             
                         st.markdown(
@@ -1415,11 +1449,12 @@ def _pay_logic_grouped(cat, df, k, order_view):
                 for _, row in group.iterrows():
                     safe_item = html.escape(str(row["item_name"]))
                     safe_cst_html = ""
-                    if row['custom']:
+                    custom_text = display_order_custom(str(row['custom']), cat)
+                    if custom_text:
                         # 飲料原本以 "/" 儲存尺寸／甜度／冰塊，
                         # 收款管理顯示時統一改成 "・"，與主餐及統計看板一致。
-                        raw_cst = str(row['custom'])
-                        if cat == "飲料":
+                        raw_cst = custom_text
+                        if cat == "飲料" and decode_order_custom(str(row['custom']), cat) is None:
                             raw_cst = raw_cst.replace("/", "・")
                         safe_cst = html.escape(raw_cst)
                         safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
@@ -1460,7 +1495,7 @@ def _pay_logic_grouped(cat, df, k, order_view):
 # ==========================================
 # 6. 主畫面與 Dialogs 邏輯
 # ==========================================
-# 主餐尺寸：固定選項。「無」為預設值，儲存時不寫入 custom。
+# 主餐尺寸：固定選項。「無」保留為明確欄位，但不顯示為客製。
 
 st.title("🍱 點餐哦各位～")
 backup_notice=backup_guard.status()
@@ -1576,132 +1611,18 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
     # ------------------------------------------------------
     # 主餐：與新增主餐相同的辣度 + 客製化快速選項 + 手動輸入
     # ------------------------------------------------------
-    if edit_category == "主餐":
-        # 解析既有 custom：
-        # 第一個區段若是目前辣度選項，就視為辣度；
-        # 其餘符合快速選項者恢復成已選按鈕，剩餘內容保留為手動客製。
-        raw_custom = str(cur_custom or "").strip()
-        main_spicy = None
-        main_tags = []
-        main_manual = ""
-
-        custom_parts = [
-            part.strip() for part in raw_custom.split(",")
-            if part is not None and part.strip()
-        ]
-
-        # 新格式：尺寸, 辣度, 快速客製...
-        # 舊資料沒有尺寸時，第一段仍可能直接是辣度，因此兼容舊格式。
-        main_size = "無"
-        if custom_parts and custom_parts[0] in get_options("main_size"):
-            main_size = custom_parts.pop(0)
-
-        if custom_parts and custom_parts[0] in spicy_levels:
-            main_spicy = custom_parts.pop(0)
-
-        valid_main_tags = {str(v) for v in custom_tags_main}
-        recognized_tags = []
-        manual_parts = []
-        for part in custom_parts:
-            if part in valid_main_tags:
-                recognized_tags.append(part)
-            else:
-                manual_parts.append(part)
-
-        main_tags = recognized_tags
-        main_manual = ", ".join(manual_parts)
-
-        # Widget key 使用 order_id + 資料代次，避免同 ID 的匯入資料沿用舊草稿。
-        spicy_key = f"edit_m_spicy_{edit_key}"
-        tags_key = f"edit_m_tags_{edit_key}"
-        manual_key = f"edit_m_manual_{edit_key}"
-
-        size_key = f"edit_m_size_{edit_key}"
-
-        if size_key not in st.session_state:
-            st.session_state[size_key] = main_size if main_size in main_size_options else get_default_option("main_size")
-        if spicy_key not in st.session_state:
-            st.session_state[spicy_key] = main_spicy if main_spicy in spicy_levels else (spicy_levels[0] if spicy_levels else None)
-        if manual_key not in st.session_state:
-            st.session_state[manual_key] = main_manual
-
-        if st.session_state.get(size_key) not in main_size_options:
-            st.session_state[size_key] = get_default_option("main_size")
-        edit_size = st.pills(
-            "尺寸（必選）",
-            main_size_options,
-            key=size_key,
-            selection_mode="single"
-        )
-
-        if spicy_levels:
-            if st.session_state.get(spicy_key) not in spicy_levels:
-                st.session_state[spicy_key] = spicy_levels[0]
-            edit_spicy = st.pills(
-                "辣度",
-                spicy_levels,
-                key=spicy_key,
-                selection_mode="single"
-            )
-        else:
-            edit_spicy = None
-            st.caption("辣度：目前沒有可選項目")
-
-        tags_widget_key = f"edit_m_tags_widget_{edit_key}"
-        if tags_widget_key not in st.session_state:
-            valid_tag_set = {str(v) for v in custom_tags_main}
-            st.session_state[tags_widget_key] = [
-                str(v) for v in main_tags
-                if v is not None and str(v) in valid_tag_set
-            ]
-
-        if custom_tags_main:
-            edit_tags = st.pills(
-                "常用客製需求（可複選）",
-                custom_tags_main,
-                key=tags_widget_key,
-                selection_mode="multi"
-            )
-        else:
-            edit_tags = []
-            st.caption("目前沒有可用的常用客製需求")
-
-        edit_manual = st.text_input(
-            "其他客製需求",
-            value=st.session_state.get(manual_key, ""),
-            placeholder="例如：不要香菜、加珍珠、醬料另外放",
-            key=f"{manual_key}_widget"
-        ).strip()
-
-        # --------------------------------------------------
-        # 儲存前重新組合成與新增主餐一致的 custom 格式
-        # --------------------------------------------------
-        clean_tags = [
-            str(v).strip() for v in edit_tags
-            if v is not None and str(v).strip()
-        ]
-        parts = []
-        if edit_size and str(edit_size).strip() != "無":
-            parts.append(str(edit_size).strip())
-        if edit_spicy and str(edit_spicy).strip() != "無":
-            parts.append(str(edit_spicy).strip())
-        if clean_tags:
-            parts.append(", ".join(clean_tags))
-        if edit_manual:
-            parts.append(edit_manual)
-
-        new_custom = ", ".join(parts) if parts else ""
-
-    # ------------------------------------------------------
-    # 飲料：與新增飲料相同的尺寸 + 甜度 + 冰塊 + 客製化
-    # ------------------------------------------------------
+    typed_custom = decode_order_custom(str(cur_custom or ""), edit_category)
+    if typed_custom is not None:
+        typed_result = edit_typed_custom(typed_custom, edit_key)
+    elif edit_category == "主餐":
+        st.caption("歷史客製未記錄欄位來源；保留原文字，不自動判定尺寸或辣度。")
+        legacy_custom = st.text_input("歷史客製內容", value=str(cur_custom or ""), key=f"edit_legacy_custom_{edit_key}")
     else:
         raw_custom = str(cur_custom or "").strip()
 
         drink_size_key = f"edit_d_size_{edit_key}"
         drink_sugar_key = f"edit_d_sugar_{edit_key}"
         drink_ice_key = f"edit_d_ice_{edit_key}"
-        drink_tags_key = f"edit_d_tags_{edit_key}"
         drink_manual_key = f"edit_d_manual_{edit_key}"
 
         # 編輯沿用原值，不把停用選項搬到備註後再添加新預設。
@@ -1709,7 +1630,7 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         base_part, separator, tag_part = raw_custom.partition(",")
         base_values = [v.strip() for v in base_part.split("/")]
         parsed = [None, None, None]
-        if "/" in base_part or base_part.strip() in drink_size_options:
+        if "/" in base_part and not raw_custom.startswith("@OfficeEats.Custom/"):
             parsed = [(base_values[i] or None) if i < len(base_values) else None for i in range(3)]
             remainder = ", ".join([v for v in base_values[3:] if v] +
                                   ([tag_part.strip()] if separator and tag_part.strip() else []))
@@ -1779,17 +1700,6 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             key=f"{drink_manual_key}_widget"
         ).strip()
 
-        new_custom = serialize_drink_options(edit_size, edit_sugar, edit_ice)
-
-        clean_drink_tags = [
-            str(v).strip() for v in edit_drink_tags
-            if v is not None and str(v).strip()
-        ]
-        if clean_drink_tags:
-            new_custom += f"{', ' if new_custom else ''}{', '.join(clean_drink_tags)}"
-        if edit_drink_manual:
-            new_custom += f"{', ' if new_custom else ''}{edit_drink_manual}"
-
     if st.button(
         "💾 儲存修改",
         type="primary",
@@ -1799,30 +1709,20 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
         # 直接在 Dialog 的本次執行中儲存。
         # 不使用 on_click callback，避免 Dialog callback 中觸發 rerun
         # 造成白畫面；所有 widget 值均取本次執行當下的回傳值。
-        if edit_category == "主餐":
-            save_tags = [
-                str(v).strip() for v in (edit_tags or [])
-                if v is not None and str(v).strip()
-            ]
-            save_manual = str(
-                st.session_state.get(f"{manual_key}_widget", edit_manual)
-            ).strip()
-
-            save_parts = []
-            if edit_size and str(edit_size).strip() != "無":
-                save_parts.append(str(edit_size).strip())
-            if edit_spicy and str(edit_spicy).strip() != "無":
-                save_parts.append(str(edit_spicy).strip())
-            if save_tags:
-                save_parts.append(", ".join(save_tags))
-            if save_manual:
-                save_parts.append(save_manual)
-            save_custom = ", ".join(save_parts) if save_parts else ""
+        if typed_custom is not None:
+            save_custom = typed_result
+        elif edit_category == "主餐":
+            save_custom = legacy_custom
         else:
             save_tags = [
                 str(v).strip() for v in (edit_drink_tags or [])
                 if v is not None and str(v).strip()
             ]
+            # A native multi-select can return each retained tag only once.
+            # Keep historical multiplicity even when a different field changes.
+            chosen_tags = save_tags
+            save_tags = [tag for tag in parsed_tags if tag in chosen_tags]
+            save_tags.extend(tag for tag in chosen_tags if tag not in parsed_tags)
             save_manual = str(
                 st.session_state.get(f"{drink_manual_key}_widget", edit_drink_manual)
             ).strip()
@@ -1834,7 +1734,13 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
             if save_manual:
                 save_custom += f"{', ' if save_custom else ''}{save_manual}"
 
-        if edit_category == "主餐" and edit_size not in main_size_options:
+            if ([edit_size, edit_sugar, edit_ice] == parsed
+                    and save_tags == parsed_tags and save_manual == ", ".join(manual_parts)):
+                save_custom = str(cur_custom or "")
+
+        if save_custom is None:
+            st.error("客製內容無法儲存，請檢查選項。")
+        elif typed_custom is not None and edit_category == "主餐" and not decode_order_custom(save_custom, edit_category)["fixed"][0]:
             st.error("請選擇餐點尺寸")
         elif not new_name:
             st.error("餐點名稱不能為空")
@@ -1857,6 +1763,10 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
                 st.session_state.pop(f"edit_m_tags_widget_{edit_key}", None)
                 st.session_state.pop(f"edit_d_tags_widget_{edit_key}", None)
+                st.session_state.pop(f"edit_legacy_custom_{edit_key}", None)
+                for key in list(st.session_state):
+                    if str(key).startswith("edit_v1_") and str(key).endswith(f"_{edit_key}"):
+                        st.session_state.pop(key, None)
 
                 for field in ("item","price","qty"):
                     st.session_state.pop(f"edit_{field}_{edit_key}",None)
@@ -1936,8 +1846,9 @@ def render_my_orders(user_name):
 
                 safe_item_name = html.escape(str(row["item_name"]))
                 safe_cst_html = ""
-                if row['custom']:
-                    safe_custom = html.escape(str(row['custom']))
+                custom_text = display_order_custom(str(row['custom']), str(row['category']))
+                if custom_text:
+                    safe_custom = html.escape(custom_text)
                     safe_cst_html = f'<div class="custom-text">{safe_custom}</div>'
 
                 c_info.markdown(
@@ -2019,7 +1930,7 @@ def render_order_entry():
             if st.session_state.pop("_reset_m_size", False):
                 st.session_state["m_size"] = get_default_option("main_size")
 
-            # 主餐尺寸固定為「無 / 小份 / 大份」；「無」可由資料庫設定為預設；預設值不寫入 custom。
+            # 主餐尺寸固定為「無 / 小份 / 大份」；「無」保留來源但不顯示為客製。
             if st.session_state.get("m_size") not in main_size_options:
                 st.session_state["m_size"] = get_default_option("main_size")
             if main_size_options:
@@ -2087,25 +1998,9 @@ def render_order_entry():
                 elif m_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif m_name:
-                    parts = []
-
-                    # 尺寸與辣度一樣，「無」代表不需要特別註記，因此不寫入 custom。
-                    if m_size and str(m_size).strip() != "無":
-                        parts.append(str(m_size).strip())
-
-                    # m_spicy 可能因 Secrets 修改而暫時為 None；只有有效文字才加入。
-                    if m_spicy and str(m_spicy).strip() != "無":
-                        parts.append(str(m_spicy).strip())
-
-                    clean_display_list = [
-                        str(value).strip()
-                        for value in display_list
-                        if value is not None and str(value).strip()
-                    ]
-                    if clean_display_list:
-                        parts.append(", ".join(clean_display_list))
-
-                    cust = ", ".join(parts) if parts else ""
+                    cust = encode_order_custom("主餐", (m_size, m_spicy),
+                        [str(v).strip() for v in current_tags if v is not None and str(v).strip()],
+                        current_manual)
                     
                     total_p = int(m_price_unit) * int(m_qty)
                     if create_member_order(
@@ -2199,17 +2094,9 @@ def render_order_entry():
                 elif d_price_unit == 0:
                     st.toast("🚫 無法加入：請輸入金額！", icon="⚠️")
                 elif d_name:
-                    base_config = serialize_drink_options(d_size, d_sugar, d_ice)
-
-                    clean_drink_tags = [
-                        str(value).strip()
-                        for value in d_display_list
-                        if value is not None and str(value).strip()
-                    ]
-
-                    final_cust = base_config
-                    if clean_drink_tags:
-                        final_cust += f"{', ' if final_cust else ''}{', '.join(clean_drink_tags)}"
+                    final_cust = encode_order_custom("飲料", (d_size, d_sugar, d_ice),
+                        [str(v).strip() for v in d_current_tags if v is not None and str(v).strip()],
+                        d_current_manual)
 
                     total_p = int(d_price_unit) * int(d_qty)
                     if create_member_order(
