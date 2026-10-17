@@ -1799,7 +1799,7 @@ class TypedCustomAcceptance(IsolatedTest):
         finally:conn.close()
         self.assertEqual(self.snapshot(),snapshot);self.assertEqual(fake.put_calls,0)
 
-    def test_personal_and_payment_views_hide_envelope_but_preserve_free_text_order(self):
+    def test_personal_and_payment_views_hide_envelope_and_share_sorted_free_text(self):
         raw=self.meal('Z,A',size='無',spicy='無')
         data=fixture();data['orders'][0]['custom']=raw;self.ready(data)
         harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();marks=[]
@@ -1807,7 +1807,7 @@ class TypedCustomAcceptance(IsolatedTest):
         env['render_my_orders']('測試甲');view=self.guard.order_snapshot()
         self.assertTrue(any('>A・Z</div>' in m for m in marks)); marks.clear()
         env['_pay_logic_grouped']('主餐',pd.DataFrame(view['rows'],columns=ORDER_FIELDS),'main',view)
-        self.assertTrue(any('客製：Z・A' in m for m in marks))
+        self.assertTrue(any('>A・Z</div>' in m for m in marks))
         self.assertFalse(any('@OfficeEats.Custom/' in m for m in marks))
         self.assertEqual(self.snapshot()['orders'][0]['custom'],raw)
 
@@ -2201,3 +2201,151 @@ env['render_my_orders']('測試甲')
         raw=self.meal('辣度：小辣,客製：不要瓜類',size='無',spicy='無')
         self.assertEqual(self.render([raw]),['客製：不要瓜類・辣度：小辣'])
         self.assertIn('客製：不要瓜類・辣度：小辣 ×1',self.groups([raw])[0])
+
+
+class PaymentCustomDisplayTests(IsolatedTest):
+    meal = TypedCustomAcceptance.meal
+    drink = TypedCustomAcceptance.drink
+
+    def setUp(self):
+        super().setUp()
+        self.codec=load_app_functions(['encode_order_custom','decode_order_custom'])
+        self.encode=self.codec['encode_order_custom'];self.decode=self.codec['decode_order_custom']
+        self.options={'main_size':['無','小份','大份'],'spicy':['無','小辣','大辣'],
+                      'drink_size':['中杯','大杯'],'sugar':['無糖','半糖'],'ice':['去冰','正常冰']}
+
+    def render(self,route,customs,category='主餐',fail_options=False):
+        import re
+        data=fixture();base=data['orders'][0]
+        data['orders']=[dict(base,id=i+1,category=category,custom=raw) for i,raw in enumerate(customs)]
+        remote=self.ready(data);before=self.snapshot();state=copy.deepcopy(self.guard.load_state())
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();marks=[];queries=[];warnings=[];synced=[]
+        ui.markdown=lambda text,**kw:marks.append(text);ui.warning=warnings.append
+        env=harness.env(ui,synced)
+        def options(field):
+            queries.append(field)
+            if fail_options:raise sqlite3.OperationalError('fake option failure')
+            return self.options.get(field,[])
+        env.update(get_options=options,get_orders_df=lambda:pd.DataFrame(self.snapshot()['orders']),
+                   get_current_shop_names=lambda:{'main':'Fake main','drink':'Fake drink'})
+        env.update(load_app_functions(['render_stats_section'],**env))
+        env[route]()
+        self.assertEqual(self.snapshot(),before);self.assertEqual(self.guard.load_state(),state)
+        self.assertEqual(synced,[]);self.assertEqual(remote.put_calls,0)
+        self.marks=marks;self.queries=queries;self.warnings=warnings
+        return [value for text in marks if text.startswith('<div class="list-row">')
+                for value in re.findall(r'<div class="custom-text">(.*?)</div>',text)]
+
+    def test_stats_details_main_equivalence_and_concise_order(self):
+        labels=self.render('render_stats_section',[self.meal('不要瓜類'),self.meal('小辣,不要瓜類',spicy='無')])
+        self.assertEqual(labels,['大份・小辣・不要瓜類']*2)
+
+    def test_stats_details_drink_equivalence_and_concise_order(self):
+        labels=self.render('render_stats_section',[self.drink('加椰果'),self.drink('去冰,加椰果,無糖,大杯',size='',sugar='',ice='')],'飲料')
+        self.assertEqual(labels,['大杯・無糖・去冰・加椰果']*2)
+
+    def test_payment_page_main_equivalence_and_concise_order(self):
+        labels=self.render('render_payment_section',[self.meal('不要瓜類'),self.meal('小辣,不要瓜類',spicy='無')])
+        self.assertEqual(labels,['大份・小辣・不要瓜類']*2)
+
+    def test_payment_page_drink_equivalence_and_concise_order(self):
+        labels=self.render('render_payment_section',[self.drink('加椰果'),self.drink('去冰,加椰果,無糖,大杯',size='',sugar='',ice='')],'飲料')
+        self.assertEqual(labels,['大杯・無糖・去冰・加椰果']*2)
+
+    def test_both_routes_preserve_drink_empty_positions(self):
+        for route in ['render_stats_section','render_payment_section']:
+            with self.subTest(route=route):
+                labels=self.render(route,[self.drink('',sugar=''),self.drink('',size=''),self.drink('',ice='')],'飲料')
+                self.assertCountEqual(labels,['大杯・去冰','無糖・去冰','大杯・無糖'])
+
+    def test_both_routes_omit_empty_custom_blocks(self):
+        for route in ['render_stats_section','render_payment_section']:
+            for category,raw in [('主餐',self.meal('',size='無',spicy='無')),('飲料',self.drink('',size='',sugar='',ice=''))]:
+                with self.subTest(route=route,category=category):
+                    self.assertEqual(self.render(route,[raw],category),[])
+
+    def test_free_order_is_stable_and_duplicate_items_are_not_lost(self):
+        for route in ['render_stats_section','render_payment_section']:
+            with self.subTest(route=route):
+                self.assertEqual(self.render(route,[self.meal('Z,A,A'),self.meal('A,Z,A')]),['大份・小辣・A・A・Z']*2)
+
+    def test_legacy_text_is_not_reclassified_and_payment_slash_display_is_preserved(self):
+        for route in ['render_stats_section','render_payment_section']:
+            with self.subTest(route=route):
+                self.assertEqual(self.render(route,['小辣,不要瓜類']),['小辣,不要瓜類'])
+        raw='大杯//去冰, 加椰果'
+        self.assertEqual(self.render('render_stats_section',[raw],'飲料'),[raw])
+        self.assertEqual(self.render('render_payment_section',[raw],'飲料'),['大杯・・去冰, 加椰果'])
+
+    def test_literal_slashes_and_html_are_preserved_and_escaped(self):
+        for route in ['render_stats_section','render_payment_section']:
+            with self.subTest(route=route):
+                labels=self.render(route,[self.drink('<b>A/B</b>')],'飲料')
+                self.assertEqual(labels,['大杯・無糖・去冰・&lt;b&gt;A/B&lt;/b&gt;'])
+                self.assertFalse(any('@OfficeEats.Custom/' in text for text in self.marks))
+
+    def test_payment_options_are_read_once_and_read_failure_keeps_rows(self):
+        raw=self.meal('小辣,加蛋',spicy='無')
+        self.render('render_payment_section',[raw]*20);self.assertEqual(self.queries,['main_size','spicy'])
+        self.assertEqual(self.render('render_payment_section',[raw,raw],fail_options=True),['大份・加蛋・小辣']*2)
+        self.assertEqual(len(self.warnings),1);self.assertEqual(self.queries,['main_size'])
+
+    def test_stats_detail_reuses_projection_without_extra_settings_reads(self):
+        self.render('render_stats_section',[self.drink('A')]*20,'飲料')
+        self.assertEqual(self.queries,['drink_size','sugar','ice'])
+
+    def test_native_pages_render_both_categories_and_payment_undo_preserve_identity(self):
+        data=fixture();base=data['orders'][0]
+        inputs=[('主餐',self.meal('不要瓜類')),('主餐',self.meal('小辣,不要瓜類',spicy='無')),
+                ('飲料',self.drink('加椰果')),('飲料',self.drink('去冰,加椰果,無糖,大杯',size='',sugar='',ice=''))]
+        data['orders']=[dict(base,id=i+1,category=cat,custom=raw) for i,(cat,raw) in enumerate(inputs)]
+        self.ready(data);before=self.snapshot();state=copy.deepcopy(self.guard.load_state())
+        import tempfile
+        previous=tempfile.tempdir;tempfile.tempdir=str(self.db.parent)
+        try:
+            from streamlit.testing.v1 import AppTest
+        finally:tempfile.tempdir=previous
+        script="""import streamlit as st
+import pandas as pd
+import sqlite3,html,time
+from backup_safety import BackupGuard,ORDER_FIELDS,OrderConflict,SafetyBlocked
+from test_backup_safety import load_app_functions,FakeRemote,NOW
+G=BackupGuard(DB,lambda:NOW)
+if 'remote' not in st.session_state:
+ st.session_state['remote']=FakeRemote(G.export())
+ st.session_state['remote'].sha=G.load_state()['remote_sha']
+remote=st.session_state['remote']
+env=load_app_functions(['render_stats_section','render_payment_section','_pay_logic_grouped',
+ 'remember_order_token','execute_order_action','save_and_sync','show_save_feedback'],
+ st=st,pd=pd,html=html,backup_guard=G,OrderConflict=OrderConflict,SafetyBlocked=SafetyBlocked,
+ ORDER_COLUMNS=list(ORDER_FIELDS),get_options=lambda field:OPTIONS[field],taiwan_now_str=lambda:NOW,
+ get_current_shop_names=lambda:{'main':'Fake main','drink':'Fake drink'},
+ get_orders_df=lambda:pd.DataFrame(G.export()['orders']),
+ sync_github_backup=lambda show_error=False:G.transfer(True,remote.get,remote.put))
+a,b=st.tabs(['統計','收款管理'])
+with a:env['render_stats_section']()
+with b:env['render_payment_section']()
+"""
+        path=self.db.parent/'fake_payment_display.py'
+        path.write_text('DB='+repr(str(self.db))+'\nOPTIONS='+repr(self.options)+'\n'+script,encoding='utf-8')
+        app=AppTest.from_file(str(path));app.secrets={'fake_only':True};app.run()
+        self.assertEqual(len(app.exception),0)
+        rows=[m.value for m in app.markdown if m.value.startswith('<div class="list-row">')]
+        self.assertEqual(len(rows),8)
+        self.assertEqual(sum('大份・小辣・不要瓜類' in text for text in rows),4)
+        self.assertEqual(sum('大杯・無糖・去冰・加椰果' in text for text in rows),4)
+        self.assertEqual(self.snapshot(),before);self.assertEqual(self.guard.load_state(),state)
+        self.assertEqual(app.session_state['remote'].put_calls,0)
+        generation=self.guard.order_snapshot()['generation']
+        for key,target_ids in [('main',[1,2]),('drink',[3,4])]:
+            for action,paid in [('pay',1),('undo',0)]:
+                snapshot=self.snapshot();count=app.session_state['remote'].put_calls
+                app.button(key=f'{action}_{key}_測試甲_{generation}').click();app.run()
+                self.assertEqual(len(app.exception),0)
+                expected=copy.deepcopy(snapshot)
+                for order in expected['orders']:
+                    if order['id'] in target_ids:order['is_paid']=paid
+                self.assertEqual(self.snapshot(),expected)
+                self.assertEqual(app.session_state['remote'].put_calls,count+1)
+                self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual(self.snapshot(),before)
