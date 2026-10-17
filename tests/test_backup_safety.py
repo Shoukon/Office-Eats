@@ -860,3 +860,226 @@ class PendingStateRegression(IsolatedTest):
                     raise RuntimeError('fake body failure')
         finally: conn.close()
         self.assertEqual(self.snapshot(),before); self.assertEqual(self.guard.load_state(),state)
+
+
+class SyncReadFenceTests(IsolatedTest):
+    """Real SQLite/OS writer locks; only the remote transport is fake."""
+    def prime(self):
+        remote=self.ready()
+        self.assertTrue(self.guard.transfer(True,remote.get,remote.put))
+        self.assertEqual(self.guard.load_state()['read_generation'],self.guard.order_snapshot()['generation'])
+        remote.get_calls=remote.put_calls=0
+        return remote
+
+    def paused_sync(self,remote,phase,check):
+        entered,release=threading.Event(),threading.Event();errors=[];out=[]
+        def pause(fn):
+            def call(*args):
+                entered.set()
+                if not release.wait(3):raise RuntimeError('test release timed out')
+                return fn(*args)
+            return call
+        def sync():
+            try:out.append(self.guard.transfer(True,pause(remote.get) if phase=='get' else remote.get,
+                                               pause(remote.put) if phase=='put' else remote.put))
+            except BaseException as exc:errors.append(exc)
+        thread=threading.Thread(target=sync);thread.start()
+        try:
+            self.assertTrue(entered.wait(3));check()
+        finally:
+            release.set();thread.join(4)
+        self.assertFalse(thread.is_alive());self.assertEqual(errors,[]);self.assertEqual(out,[True])
+
+    def test_order_and_member_reads_finish_during_slow_get_without_releasing_writer_lock(self):
+        remote=self.prime();self.write_item('latest local')
+        def check():
+            other=BackupGuard(self.db,lambda:NOW,timeout=.15)
+            self.assertEqual(other.order_snapshot()['rows'][0][3],'latest local')
+            self.assertEqual(other.member_snapshot()['rows'],((1,'測試甲'),))
+            # Read optimization must not let a second writer bypass the OS lock.
+            with self.assertRaises(sqlite3.OperationalError):other.connect(write=True)
+        self.paused_sync(remote,'get',check)
+        self.assertEqual((remote.get_calls,remote.put_calls),(1,1))
+        self.assertEqual(self.guard.status()['kind'],'success')
+
+    def test_readers_finish_during_slow_put_and_return_committed_snapshot(self):
+        remote=self.prime();self.write_item('committed before PUT')
+        def check():
+            self.assertEqual(self.guard.load_state()['attempt']['kind'],'sync')
+            other=BackupGuard(self.db,lambda:NOW,timeout=.15)
+            self.assertEqual(other.order_snapshot()['rows'][0][3],'committed before PUT')
+            self.assertEqual(other.member_snapshot()['generation'],self.guard.load_state()['order_generation'])
+        self.paused_sync(remote,'put',check)
+        self.assertEqual((remote.get_calls,remote.put_calls),(1,1))
+
+    def test_import_generation_published_before_commit_cannot_stamp_old_rows_with_new_identity(self):
+        remote=self.prime();old=self.guard.order_token(self.guard.order_snapshot(),[1])
+        entered,release,read_started,read_done=map(lambda _:threading.Event(),range(4))
+        original=self.guard._replace_snapshot;result=[];errors=[];views=[]
+        def replace(conn,data,state):
+            original(conn,data,state)
+            entered.set()
+            if not release.wait(3):raise RuntimeError('test timeout')
+        self.guard._replace_snapshot=replace
+        def importing():
+            try:result.append(self.guard.transfer(True,remote.get,remote.put,imported=fixture('new identity')))
+            except BaseException as exc:errors.append(exc)
+        other=BackupGuard(self.db,lambda:NOW,timeout=3)
+        def reading():
+            read_started.set()
+            try:views.append(other.order_snapshot())
+            except BaseException as exc:errors.append(exc)
+            finally:read_done.set()
+        first=threading.Thread(target=importing);second=threading.Thread(target=reading)
+        first.start()
+        try:
+            self.assertTrue(entered.wait(3))
+            state=self.guard.load_state()
+            self.assertNotEqual(state['read_generation'],state['order_generation'])
+            second.start();self.assertTrue(read_started.wait(3));self.assertFalse(read_done.wait(.1))
+        finally:
+            release.set();first.join(4)
+            if second.ident is not None:second.join(4)
+        self.assertEqual(errors,[]);self.assertEqual(result,[True]);self.assertEqual(len(views),1)
+        self.assertEqual(views[0]['rows'][0][3],'new identity')
+        self.assertNotEqual(views[0]['generation'],old['generation'])
+        with self.assertRaises(__import__('backup_safety').OrderConflict):self.guard.apply_order_action('delete',old)
+
+    def interleave_import(self,at_call):
+        remote=self.prime();other=BackupGuard(self.db,lambda:NOW);original=other.load_state;calls=[]
+        old=self.guard.order_snapshot();data=fixture()  # identical rows still require a new identity
+        def state():
+            calls.append(True)
+            if len(calls)==at_call:
+                self.assertTrue(self.guard.transfer(True,remote.get,remote.put,imported=data))
+            return original()
+        # Capture the old observation first for the before-read race.
+        if at_call==1:
+            old_state=original()
+            def first_state():
+                value=state()
+                return old_state if len(calls)==1 else value
+            other.load_state=first_state
+        else:other.load_state=state
+        view=other.order_snapshot()
+        self.assertEqual(view['rows'],old['rows']);self.assertNotEqual(view['generation'],old['generation'])
+        self.assertEqual(view['generation'],self.guard.load_state()['order_generation'])
+        self.assertGreaterEqual(len(calls),3)  # two observations then locked fallback
+
+    def test_import_between_first_journal_observation_and_sqlite_read_uses_fallback(self):
+        self.interleave_import(1)
+
+    def test_import_after_sqlite_read_before_second_observation_uses_fallback(self):
+        self.interleave_import(2)
+
+    def test_uncommitted_multirow_write_is_never_visible_and_commit_keeps_rows_consistent(self):
+        self.prime();conn=self.guard.connect(write=True)
+        try:
+            conn.execute("UPDATE orders SET is_paid=1,item_name='pending'")
+            conn.execute("UPDATE order_members SET name='pending'")
+            other=BackupGuard(self.db,lambda:NOW,timeout=.15)
+            self.assertEqual(other.order_snapshot()['rows'][0][8],0)
+            self.assertEqual(other.member_snapshot()['rows'],((1,'測試甲'),))
+            conn.execute("UPDATE orders SET name='pending'");conn.commit()
+        finally:conn.close()
+        self.assertEqual(other.order_snapshot()['rows'][0][1],'pending')
+        self.assertEqual(other.order_snapshot()['rows'][0][8],1)
+        self.assertEqual(other.member_snapshot()['rows'],((1,'pending'),))
+
+    def test_unknown_put_retains_journal_blocks_writes_and_restart_reconciles_without_resend(self):
+        remote=self.prime();self.write_item('uncertain saved');remote.mode='lost_response_get_fail'
+        self.assertFalse(self.guard.transfer(True,remote.get,remote.put))
+        before=self.snapshot();state=self.guard.load_state();self.assertTrue(state['attempt'])
+        other=BackupGuard(self.db,lambda:NOW,timeout=.15)
+        token=other.order_token(other.order_snapshot(),[1])
+        with self.assertRaises(SafetyBlocked):other.apply_order_action('payment',token)
+        self.assertEqual(self.snapshot(),before);self.assertNotEqual(other.status()['kind'],'success')
+        other.prepare(schema);remote.fail_get=False
+        self.assertEqual(other.startup(True,remote.get),'reconciled')
+        self.assertEqual(remote.put_calls,1);self.assertEqual(self.snapshot(),before)
+        self.assertEqual(other.status()['kind'],'success')
+
+    def test_remote_conflict_preserves_local_content_and_does_not_add_put(self):
+        remote=self.prime();self.write_item('local preserved');before=self.snapshot();remote.sha='other-writer'
+        self.assertFalse(self.guard.transfer(True,remote.get,remote.put))
+        self.assertEqual((remote.get_calls,remote.put_calls),(1,0));self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.guard.status()['kind'],'error');self.assertFalse(self.guard.load_state()['attempt'])
+
+    def test_old_journal_without_binding_keeps_original_lock_path(self):
+        self.ready();original=self.guard.file_lock;calls=[]
+        from contextlib import contextmanager
+        @contextmanager
+        def tracked():
+            calls.append(True)
+            with original():yield
+        self.guard.file_lock=tracked
+        self.guard.order_snapshot();self.guard.member_snapshot();self.assertEqual(len(calls),2)
+        self.assertNotIn('read_generation',self.guard.load_state())
+
+    def test_malformed_read_binding_is_rejected(self):
+        self.prime()
+        state=self.guard.load_state();state['read_generation']='invalid'
+        self.guard.save_state(state)
+        with self.assertRaises(SafetyBlocked):self.guard.order_snapshot()
+
+    def test_fast_path_uses_begin_and_select_only_without_network_or_state_writes(self):
+        self.prime();state=self.guard.state_path.read_bytes();queries=[]
+        module=__import__('backup_safety');real=module.sqlite3.connect
+        def connect(*args,**kwargs):
+            conn=real(*args,**kwargs);conn.set_trace_callback(queries.append);return conn
+        with patch.object(module.sqlite3,'connect',side_effect=connect):
+            self.guard.order_snapshot();self.guard.member_snapshot()
+        self.assertEqual(self.guard.state_path.read_bytes(),state)
+        self.assertEqual(sum(q=='BEGIN' for q in queries),2)
+        self.assertTrue(all(q=='BEGIN' or q.startswith('SELECT ') for q in queries))
+
+    def test_failed_import_leaves_binding_invalid_until_committed_epoch_is_rebound(self):
+        remote=self.prime();before=self.snapshot();old=self.guard.order_snapshot()
+        remote.mode='reject'
+        self.assertFalse(self.guard.transfer(True,remote.get,remote.put,imported=fixture('must rollback')))
+        state=self.guard.load_state();self.assertNotEqual(state['read_generation'],state['order_generation'])
+        view=self.guard.order_snapshot();self.assertEqual(view['rows'],old['rows'])
+        self.assertEqual(self.snapshot(),before);self.assertNotEqual(view['generation'],old['generation'])
+        remote.mode='normal';self.assertTrue(self.guard.transfer(True,remote.get,remote.put))
+        self.assertEqual(self.guard.load_state()['read_generation'],view['generation'])
+
+    def test_member_read_rechecks_generation_when_import_occurs_before_query(self):
+        remote=self.prime();other=BackupGuard(self.db,lambda:NOW);original=other.load_state
+        old_state=original();calls=[]
+        def state():
+            calls.append(True)
+            if len(calls)==1:
+                self.assertTrue(self.guard.transfer(True,remote.get,remote.put,imported=fixture()))
+                return old_state
+            return original()
+        other.load_state=state
+        view=other.member_snapshot();expected=self.guard.member_snapshot()
+        self.assertEqual(view,expected);self.assertNotEqual(view['generation'],old_state['order_generation'])
+        self.assertNotEqual(view['rows'][0][0],1)
+
+    def test_journal_io_lock_prevents_windows_read_replace_sharing_race(self):
+        self.prime();entered,release,started,done=map(lambda _:threading.Event(),range(4));errors=[];views=[]
+        original=self.guard._save_state
+        def paused(state):
+            entered.set()
+            if not release.wait(3):raise RuntimeError('release timeout')
+            original(state)
+        self.guard._save_state=paused
+        def save():
+            try:
+                with self.guard.exclusive():self.guard.save_state(self.guard.load_state())
+            except BaseException as exc:errors.append(exc)
+        def read():
+            started.set()
+            try:views.append(BackupGuard(self.db,lambda:NOW).order_snapshot())
+            except BaseException as exc:errors.append(exc)
+            finally:done.set()
+        writer=threading.Thread(target=save);reader=threading.Thread(target=read);writer.start()
+        try:
+            self.assertTrue(entered.wait(3));reader.start();self.assertTrue(started.wait(3))
+            self.assertFalse(done.wait(.05))
+        finally:
+            release.set();writer.join(4)
+            if reader.ident is not None:reader.join(4)
+        self.assertFalse(writer.is_alive() or reader.is_alive());self.assertEqual(errors,[])
+        self.assertEqual(len(views),1);self.assertEqual(views[0],self.guard.order_snapshot())
