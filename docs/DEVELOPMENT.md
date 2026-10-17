@@ -55,3 +55,16 @@ CI 的 Linux／Cloud 相容性結果必須以實際 Actions 結果為準，不�
 5. 寫入、付款及故障注入只在隔離假資料環境驗收；正式頁面只讀。任何部署由負責人另行核准。
 
 復原與備份目的地切換見 [OPERATIONS.md](OPERATIONS.md)。
+
+
+## P2-06：開發容器防護
+
+原 CORS／XSRF 停用參數只在 .devcontainer 的 postAttachCommand；
+沒有找到其他開發 proxy／設定要求關閉防護。現在回復 Streamlit 預設防護，
+不修改 Cloud。Devcontainer 仍會在 attach 時自動啟動應用，
+只能在沒有正式 Secrets、資料庫或備份的獨立開發環境使用。
+本批不建置容器、不執行該 postAttachCommand。
+
+設定及既有假 UI 測試不能證明 Codespaces 反向代理、登入、跨來源 Cookie 或
+瀏覽器 XSRF 的實際行為；這些仍需安全開發環境驗收。若出現代理問題，先記錄
+請求 origin／轉發配置的非敏感資訊，再針對代理設定處理，不先全面關閉防護。
