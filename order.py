@@ -451,6 +451,22 @@ def statistics_custom(raw, category, options):
     return encode_order_custom(category, fixed, free, "")
 
 
+def display_normalized_custom(raw_custom, category, options_cache):
+    """Shared read-only detail display, using this render's active options only."""
+    display_custom = raw_custom
+    if decode_order_custom(raw_custom, category) is not None:
+        if category not in options_cache:
+            fields = ("main_size", "spicy") if category == "主餐" else ("drink_size", "sugar", "ice")
+            try:
+                options_cache[category] = {field: get_options(field) for field in fields}
+            except sqlite3.OperationalError:
+                options_cache[category] = None
+                st.warning("⚠️ 暫時無法讀取客製設定，以下訂單保留原有欄位顯示，請稍後重新整理。")
+        if options_cache[category] is not None:
+            display_custom = statistics_custom(raw_custom, category, options_cache[category])
+    return display_order_custom(display_custom, category, normalized=True, concise=True)
+
+
 def edit_typed_custom(data, edit_key):
     category = data["category"]
     fields = (("尺寸（必選）", "main_size"), ("辣度", "spicy")) if category == "主餐" else (
@@ -1384,7 +1400,7 @@ def render_stats_section():
                         safe_item = html.escape(str(row["item_name"]))
                         safe_cst_html = ""
                         if row['stats_custom']:
-                            safe_cst = html.escape(display_order_custom(row['custom'], row['category']))
+                            safe_cst = html.escape(display_order_custom(row['stats_semantic'], row['category'], normalized=True, concise=True))
                             safe_cst_html = f'<div class="custom-text">{safe_cst}</div>'
                             
                         st.markdown(
@@ -1458,6 +1474,7 @@ def render_payment_section():
 def _pay_logic_grouped(cat, df, k, order_view):
     if df.empty: st.caption("目前無資料"); return
     unpaid_df = df[df['is_paid'] == 0]
+    display_options = {}  # discarded after this category render
     
     if not unpaid_df.empty:
         grouped_unpaid = unpaid_df.groupby('name')
@@ -1490,7 +1507,7 @@ def _pay_logic_grouped(cat, df, k, order_view):
                 for _, row in group.iterrows():
                     safe_item = html.escape(str(row["item_name"]))
                     safe_cst_html = ""
-                    custom_text = display_order_custom(str(row['custom']), cat)
+                    custom_text = display_normalized_custom(str(row['custom']), cat, display_options)
                     if custom_text:
                         # 飲料原本以 "/" 儲存尺寸／甜度／冰塊，
                         # 收款管理顯示時統一改成 "・"，與主餐及統計看板一致。
@@ -1888,19 +1905,7 @@ def render_my_orders(user_name):
 
                 safe_item_name = html.escape(str(row["item_name"]))
                 safe_cst_html = ""
-                raw_custom, category = str(row['custom']), str(row['category'])
-                display_custom = raw_custom
-                if decode_order_custom(raw_custom, category) is not None:
-                    if category not in display_options:
-                        fields = ("main_size", "spicy") if category == "主餐" else ("drink_size", "sugar", "ice")
-                        try:
-                            display_options[category] = {field: get_options(field) for field in fields}
-                        except sqlite3.OperationalError:
-                            display_options[category] = None
-                            st.warning("⚠️ 暫時無法讀取客製設定，以下訂單保留原有欄位顯示，請稍後重新整理。")
-                    if display_options[category] is not None:
-                        display_custom = statistics_custom(raw_custom, category, display_options[category])
-                custom_text = display_order_custom(display_custom, category, normalized=True, concise=True)
+                custom_text = display_normalized_custom(str(row['custom']), str(row['category']), display_options)
                 if custom_text:
                     safe_custom = html.escape(custom_text)
                     safe_cst_html = f'<div class="custom-text">{safe_custom}</div>'
