@@ -343,8 +343,19 @@ class FakeUI:
         return self.session_state.get(kwargs.get("key"), kwargs.get("default", [] if kwargs.get("selection_mode") == "multi" else None))
     def error(self, message): self.errors.append(message)
     def toast(self, message, **kwargs): self.toasts.append(message)
-    def rerun(self): pass
+    def rerun(self, **kwargs): pass
     def __getattr__(self, name): return lambda *args, **kwargs: None
+
+
+def open_delete_request(env,ui):
+    """Use the actual displayed opener's captured callback, not a raw ID."""
+    ui.buttons.clear()
+    env['render_my_orders']('測試甲')
+    registered=next(kw for label,kw in ui.buttons if label=='🗑️')
+    registered['on_click'](*registered['args'])
+    request=ui.session_state.pop('_delete_order_request')
+    ui.session_state['_active_order_delete_request']=request
+    return request
 
 
 class PillsSessionStateTests(unittest.TestCase):
@@ -553,10 +564,9 @@ class SaveSyncFeedbackTests(IsolatedTest):
         self.assertEqual(self.remote.data['orders'][0]['item_name'],'Fake silent edit')
         self.check_feedback(True)
         self.ui.clicked.clear(); self.ui.buttons.clear()
-        self.env['render_my_orders']('測試甲')
-        registered=next(kw for label,kw in self.ui.buttons if label=='⭕ 確認')
-        registered['on_click'](*registered['args']); self.ui.clicked.add('⭕ 確認')
-        self.env['render_my_orders']('測試甲')
+        request=open_delete_request(self.env,self.ui)
+        self.ui.clicked.add('確認刪除')
+        self.env['delete_order_dialog'](request)
         self.assertEqual(self.snapshot()['orders'],[])
         self.assertEqual(self.remote.data['orders'],[]); self.check_feedback(True)
 
@@ -631,11 +641,9 @@ class SaveSyncFeedbackTests(IsolatedTest):
         self.assertEqual(self.snapshot()['orders'][0]['item_name'],'Fake edit')
         self.check_feedback(False)
         self.ui.clicked.clear(); self.ui.toasts.clear()
-        self.env['render_my_orders']('測試甲')
-        registered=next(kw for label,kw in self.ui.buttons if label=='⭕ 確認')
-        registered['on_click'](*registered['args'])
-        self.ui.clicked.add('⭕ 確認')
-        self.env['render_my_orders']('測試甲')
+        request=open_delete_request(self.env,self.ui)
+        self.ui.clicked.add('確認刪除')
+        self.env['delete_order_dialog'](request)
         self.assertEqual(self.snapshot()['orders'],[]); self.check_feedback(False)
 
     def test_payment_and_undo_saved_locally_despite_sync_failure(self):
@@ -696,7 +704,7 @@ class SaveSyncFeedbackTests(IsolatedTest):
 class OrderUIIntegrationTests(IsolatedTest):
     def env(self, ui, synced):
         import html
-        names = ["serialize_drink_options", "remember_order_token", "execute_order_action", "edit_order_dialog", "render_my_orders", "render_payment_section", "_pay_logic_grouped", "clear_orders_dialog", "save_and_sync", "show_save_feedback"]
+        names = ["dismiss_order_delete", "request_order_delete", "delete_order_dialog", "serialize_drink_options", "remember_order_token", "execute_order_action", "edit_order_dialog", "render_my_orders", "render_payment_section", "_pay_logic_grouped", "clear_orders_dialog", "save_and_sync", "show_save_feedback"]
         return load_app_functions(names, st=ui, backup_guard=self.guard, pd=pd, html=html,
                                   ORDER_COLUMNS=list(ORDER_FIELDS), OrderConflict=OrderConflict,
                                   sync_github_backup=lambda show_error=False: synced.append(True) or True,
@@ -833,17 +841,15 @@ class OrderUIIntegrationTests(IsolatedTest):
 
     def test_delete_uses_preclick_token_and_does_not_sync_rejection(self):
         remote = self.ready(); ui = FakeUI(); synced = []; env = self.env(ui, synced)
-        env["render_my_orders"]("測試甲")
-        registered = next(kwargs for label, kwargs in ui.buttons if label == "⭕ 確認")
-        registered["on_click"](*registered["args"])
+        request=open_delete_request(env,ui)
         self.assertTrue(self.guard.transfer(True, remote.get, remote.put, imported=fixture("replacement")))
-        before = self.snapshot(); ui.clicked.add("⭕ 確認")
-        env["render_my_orders"]("測試甲")
-        self.assertEqual(self.snapshot(), before); self.assertEqual(synced, [])
-        registered = next(kwargs for label, kwargs in reversed(ui.buttons) if label == "⭕ 確認")
-        registered["on_click"](*registered["args"])
-        env["render_my_orders"]("測試甲")
-        self.assertEqual(self.snapshot()["orders"], []); self.assertEqual(synced, [True])
+        before=self.snapshot(); ui.clicked.add("確認刪除")
+        env['delete_order_dialog'](request)
+        self.assertEqual(self.snapshot(),before); self.assertEqual(synced,[])
+        ui.clicked.clear()
+        fresh=open_delete_request(env,ui)
+        ui.clicked.add("確認刪除"); env['delete_order_dialog'](fresh)
+        self.assertEqual(self.snapshot()["orders"],[]); self.assertEqual(synced,[True])
 
     def test_undo_payment_uses_original_paid_snapshot_and_accepts_fresh_token(self):
         data = fixture(); data["orders"][0]["is_paid"] = 1
@@ -877,7 +883,7 @@ class OrderUIIntegrationTests(IsolatedTest):
     def test_id_routes_have_no_raw_id_writes_and_use_captured_tokens(self):
         tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
         funcs = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-        for name in ("edit_order_dialog", "render_my_orders", "_pay_logic_grouped", "clear_orders_dialog"):
+        for name in ("edit_order_dialog", "delete_order_dialog", "_pay_logic_grouped", "clear_orders_dialog"):
             with self.subTest(route=name):
                 calls = [node for node in ast.walk(funcs[name]) if isinstance(node, ast.Call)]
                 self.assertFalse(any(isinstance(node.func, ast.Name) and node.func.id == "execute_db" for node in calls))
@@ -899,7 +905,7 @@ class OrderUIIntegrationTests(IsolatedTest):
                         else:
                             env[route]()
                     self.assertTrue(ui.errors); self.assertEqual(synced,[])
-                    self.assertFalse(any(label in ("✏️","⭕ 確認","確認收款","撤銷收款","💾 儲存修改") for label,_ in ui.buttons))
+                    self.assertFalse(any(label in ("✏️","確認刪除","確認收款","撤銷收款","💾 儲存修改") for label,_ in ui.buttons))
                     self.assertEqual(self.snapshot(),before)
 
 
@@ -1184,3 +1190,192 @@ class StatsQueryCountTests(IsolatedTest):
         self.render(20)
         self.assertEqual(self.queries,['main_size','spicy','main_size','spicy'])
         self.assertEqual(self.observed[-1],['微辣'])
+
+
+class DeleteDialogUIAcceptance(IsolatedTest):
+    def setUp(self):
+        super().setUp()
+        data=fixture(); other=copy.deepcopy(data['orders'][0]); other.update(id=2,is_paid=1,item_name='Fake paid untouched')
+        data['orders'].append(other)
+        self.remote=self.ready(data); self.before=self.snapshot()
+        self.ui=FakeUI(); harness=OrderUIIntegrationTests(); harness.guard=self.guard
+        self.env=harness.env(self.ui,[])
+        self.env.update(load_app_functions(['sync_github_backup','current_backup_result'],
+            **self.env,github_is_configured=lambda:True,
+            github_get_backup=self.remote.get,github_put_backup=self.remote.put))
+
+    def test_opener_captures_token_and_confirmation_is_explicit(self):
+        request=open_delete_request(self.env,self.ui)
+        self.assertEqual(request['token']['generation'],self.guard.order_snapshot()['generation'])
+        self.env['delete_order_dialog'](request)
+        button=next(kw for label,kw in self.ui.buttons if label=='確認刪除')
+        self.assertEqual(button['type'],'primary'); self.assertTrue(button['use_container_width'])
+        self.assertNotIn('icon',button)
+        self.assertEqual(self.snapshot(),self.before); self.assertEqual(self.remote.put_calls,0)
+
+    def test_cancel_closes_intent_without_writing_or_sync(self):
+        request=open_delete_request(self.env,self.ui); state=self.guard.load_state()
+        self.ui.clicked.add('取消'); self.env['delete_order_dialog'](request)
+        self.assertEqual(self.ui.session_state['_closed_delete_intent'],request['intent'])
+        self.assertNotIn('_delete_order_request',self.ui.session_state)
+        self.assertEqual(self.snapshot(),self.before); self.assertEqual(self.guard.load_state(),state)
+        self.assertEqual(self.remote.put_calls,0)
+
+    def test_success_removes_only_target_and_closes_without_repeated_sync(self):
+        request=open_delete_request(self.env,self.ui); self.ui.clicked.add('確認刪除')
+        self.env['delete_order_dialog'](request)
+        self.assertEqual(self.snapshot()['orders'],[self.before['orders'][1]])
+        self.assertEqual(self.remote.data['orders'],[self.before['orders'][1]])
+        self.assertEqual(self.ui.session_state['_closed_delete_intent'],request['intent'])
+        self.assertNotIn('_delete_order_request',self.ui.session_state)
+        for _ in range(3): self.env['delete_order_dialog'](request)
+        self.assertEqual(self.remote.put_calls,1)
+        self.assertEqual(self.ui.errors,[])
+
+    def test_sql_failure_keeps_orders_and_can_cancel(self):
+        conn=self.guard.connect(write=True)
+        try:
+            conn.execute("CREATE TRIGGER fake_delete_failure BEFORE DELETE ON orders BEGIN SELECT RAISE(ABORT,'fake delete failure'); END")
+            conn.commit()
+        finally: conn.close()
+        request=open_delete_request(self.env,self.ui); self.ui.clicked.add('確認刪除')
+        self.env['delete_order_dialog'](request)
+        self.assertEqual(self.snapshot(),self.before); self.assertTrue(self.ui.errors)
+        self.assertEqual(self.remote.put_calls,0)
+        self.assertNotIn('_closed_delete_intent',self.ui.session_state)
+        self.ui.clicked.clear(); self.ui.clicked.add('取消')
+        self.env['delete_order_dialog'](request)
+        self.assertEqual(self.ui.session_state['_closed_delete_intent'],request['intent'])
+
+    def test_imported_same_id_rejects_original_intent(self):
+        request=open_delete_request(self.env,self.ui)
+        self.assertTrue(self.guard.transfer(True,self.remote.get,self.remote.put,imported=fixture('replacement')))
+        before=self.snapshot(); puts=self.remote.put_calls
+        self.ui.clicked.add('確認刪除'); self.env['delete_order_dialog'](request)
+        self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.put_calls,puts)
+        self.assertTrue(self.ui.errors)
+
+    def test_payment_after_open_prevents_delete(self):
+        request=open_delete_request(self.env,self.ui)
+        token=self.guard.order_token(self.guard.order_snapshot(),[1])
+        self.guard.apply_order_action('payment',token); before=self.snapshot()
+        self.ui.clicked.add('確認刪除'); self.env['delete_order_dialog'](request)
+        self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.put_calls,0)
+        self.assertTrue(self.ui.errors)
+
+    def test_sync_failure_still_closes_after_local_delete_and_warns(self):
+        request=open_delete_request(self.env,self.ui); self.remote.fail_get=True
+        self.ui.clicked.add('確認刪除'); self.env['delete_order_dialog'](request)
+        self.assertEqual(self.snapshot()['orders'],[self.before['orders'][1]])
+        self.assertEqual(self.ui.session_state['_closed_delete_intent'],request['intent'])
+        self.assertTrue(any('本機已儲存' in text for text in self.ui.toasts))
+        self.assertEqual(self.remote.put_calls,0)
+
+    def test_dismiss_callback_clears_active_intent_without_writing(self):
+        request=open_delete_request(self.env,self.ui); before=self.guard.load_state()
+        self.env['dismiss_order_delete']()
+        self.assertNotIn('_active_order_delete_request',self.ui.session_state)
+        self.assertNotIn('_delete_order_request',self.ui.session_state)
+        self.assertEqual(self.ui.session_state['_closed_delete_intent'],request['intent'])
+        self.assertEqual(self.snapshot(),self.before); self.assertEqual(self.guard.load_state(),before)
+        self.assertEqual(self.remote.put_calls,0)
+
+
+class DeleteDialogAppTests(unittest.TestCase):
+    """Real Streamlit dialog registration/reruns; no browser or full app."""
+    def setUp(self):
+        self.seed=DeleteDialogUIAcceptance(); self.seed.setUp()
+        self.addCleanup(self.seed.doCleanups)
+
+    def app(self):
+        import tempfile
+        previous=tempfile.tempdir; tempfile.tempdir=str(self.seed.db.parent)
+        try:
+            from streamlit.testing.v1 import AppTest
+        finally: tempfile.tempdir=previous
+        script="""import ast, html
+import streamlit as st
+import pandas as pd
+from backup_safety import BackupGuard, OrderConflict, ORDER_FIELDS
+from test_backup_safety import load_app_functions, FakeRemote, NOW, SOURCE
+"""
+        script+=f"backup_guard=BackupGuard({str(self.seed.db)!r},lambda:NOW)\n"
+        script+=f"remote=st.session_state.setdefault('fake_remote',FakeRemote({self.seed.before!r}))\n"
+        script+="""env=load_app_functions(['dismiss_order_delete','request_order_delete','delete_order_dialog','render_my_orders',
+    'remember_order_token','execute_order_action','save_and_sync','show_save_feedback',
+    'sync_github_backup','current_backup_result'],st=st,backup_guard=backup_guard,pd=pd,html=html,
+    ORDER_COLUMNS=list(ORDER_FIELDS),OrderConflict=OrderConflict,
+    github_is_configured=lambda:True,github_get_backup=remote.get,github_put_backup=remote.put,
+    edit_request=None)
+env['render_my_orders']('測試甲')
+# Execute the real top-level delete dispatch, not a test-only visibility flag.
+tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+for parent in ast.walk(tree):
+    body=getattr(parent,'body',None)
+    if not isinstance(body,list): continue
+    for i,node in enumerate(body):
+        if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='delete_request' for t in node.targets) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='pop':
+            exec(compile(ast.Module(body=body[i:i+4],type_ignores=[]),str(SOURCE),'exec'),env)
+"""
+        path=self.seed.db.parent/'fake_single_delete_ui.py'; path.write_text(script,encoding='utf-8')
+        app=AppTest.from_file(str(path)); app.secrets={'fake_only':True}; app.run()
+        self.assertEqual(len(app.exception),0)
+        return app
+
+    def open(self,app):
+        next(b for b in app.button if b.label=='🗑️').click().run()
+        self.assertEqual(len(app.exception),0)
+        self.assertEqual(len(app.get('dialog')),1)
+        self.assertTrue(any(b.label=='確認刪除' for b in app.button))
+
+    def test_success_closes_real_dialog_and_rerun_keeps_it_closed(self):
+        app=self.app(); self.open(app)
+        next(b for b in app.button if b.label=='確認刪除').click().run()
+        self.assertEqual(len(app.exception),0)
+        self.assertNotIn('_active_order_delete_request',app.session_state.filtered_state)
+        # AppTest retains fragment deltas until a complete app run; verify that
+        # run explicitly rather than claiming a browser overlay was observed.
+        app.run()
+        self.assertEqual(len(app.get('dialog')),0)
+        self.assertFalse(any(b.label=='確認刪除' for b in app.button))
+        self.assertEqual(self.seed.snapshot()['orders'],[self.seed.before['orders'][1]])
+        self.assertEqual(app.session_state['fake_remote'].put_calls,1)
+        app.run()
+        self.assertEqual(len(app.get('dialog')),0)
+        self.assertEqual(app.session_state['fake_remote'].put_calls,1)
+
+    def test_cancel_closes_real_dialog_without_data_changes(self):
+        app=self.app(); self.open(app)
+        next(b for b in app.button if b.label=='取消').click().run()
+        self.assertEqual(len(app.exception),0)
+        self.assertNotIn('_active_order_delete_request',app.session_state.filtered_state)
+        app.run()
+        self.assertEqual(len(app.get('dialog')),0)
+        self.assertEqual(self.seed.snapshot(),self.seed.before)
+        self.assertEqual(app.session_state['fake_remote'].put_calls,0)
+
+    def test_sql_failure_keeps_dialog_open_and_cancel_remains_available(self):
+        conn=self.seed.guard.connect(write=True)
+        try:
+            conn.execute("CREATE TRIGGER fake_fail BEFORE DELETE ON orders BEGIN SELECT RAISE(ABORT,'fake failure'); END")
+            conn.commit()
+        finally: conn.close()
+        app=self.app(); self.open(app)
+        next(b for b in app.button if b.label=='確認刪除').click().run()
+        self.assertEqual(len(app.exception),0); self.assertEqual(len(app.get('dialog')),1)
+        self.assertTrue(app.error); self.assertEqual(self.seed.snapshot(),self.seed.before)
+        self.assertEqual(app.session_state['fake_remote'].put_calls,0)
+        next(b for b in app.button if b.label=='取消').click().run()
+        self.assertNotIn('_active_order_delete_request',app.session_state.filtered_state)
+        app.run()
+        self.assertEqual(len(app.get('dialog')),0)
+
+    def test_version_and_native_confirmation_label(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        version=next(n.value.value for n in tree.body if isinstance(n,ast.Assign)
+            and any(isinstance(t,ast.Name) and t.id=='VERSION' for t in n.targets))
+        self.assertEqual(version,'v3.8.0')
+        app=self.app(); self.open(app)
+        confirm=next(b for b in app.button if b.label=='確認刪除')
+        self.assertEqual(confirm.proto.type,'primary')
+        self.assertNotIn('⭕',confirm.label)

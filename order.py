@@ -33,7 +33,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.7.1"
+VERSION = "v3.8.0"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -1872,6 +1872,52 @@ def edit_order_dialog(order_id, category, cur_name, cur_price_total, cur_qty, cu
 
 
 
+def request_order_delete(token, item_name):
+    # A Session-local UI intent, never a database generation or identity token.
+    intent=st.session_state.get("_delete_request_serial",0)+1
+    st.session_state["_delete_request_serial"]=intent
+    st.session_state["_delete_order_request"]={
+        "intent":intent,"token":token,"item_name":str(item_name)}
+
+
+def dismiss_order_delete():
+    request=st.session_state.pop("_active_order_delete_request",None)
+    st.session_state.pop("_delete_order_request",None)
+    if request:
+        st.session_state["_closed_delete_intent"]=request["intent"]
+
+
+@st.dialog("確認刪除訂單",on_dismiss=dismiss_order_delete)
+def delete_order_dialog(request):
+    intent=request["intent"]
+    if st.session_state.get("_closed_delete_intent")==intent:
+        st.rerun(scope="app")
+        return
+    st.write(f"刪除 **{html.escape(request['item_name'])}**？")
+    cancel,confirm=st.columns(2)
+    with cancel:
+        if st.button("取消",key=f"cancel_order_delete_{intent}",use_container_width=True):
+            dismiss_order_delete()
+            st.session_state["_closed_delete_intent"]=intent
+            st.rerun(scope="app")
+            return
+    with confirm:
+        if st.button("確認刪除",key=f"confirm_order_delete_{intent}",type="primary",use_container_width=True):
+            # Original captured token revalidates row identity and unpaid state.
+            try:
+                affected=execute_order_action("delete",request.get("token"))
+            except sqlite3.DatabaseError:
+                st.error("⚠️ 訂單刪除未確認成功，請取消後重新整理核對，或稍後重試。")
+                return
+            if affected==1:
+                dismiss_order_delete()
+                st.session_state["_closed_delete_intent"]=intent
+                show_save_feedback("訂單已刪除",save_and_sync())
+                st.rerun(scope="app")
+            elif affected is not None:
+                st.error("⚠️ 訂單未刪除，請取消後重新開啟確認。")
+
+
 def render_my_orders(user_name):
     try:
         order_view = backup_guard.order_snapshot(user_name)
@@ -1937,15 +1983,11 @@ def render_my_orders(user_name):
                         disabled=True
                     )
                 else:
-                    with c_btn2.popover("🗑️", help="刪除", use_container_width=True):
-                        st.write(f"刪除 **{safe_item_name}**？")
-                        token_key=f"delete_token_{row['id']}"
-                        if st.button("⭕ 確認", key=f"confirm_del_{row['id']}_{order_view['generation']}", type="primary", use_container_width=True,
-                                     on_click=remember_order_token,args=(token_key,backup_guard.order_token(order_view,[row['id']]))):
-                            # SQL 再次檢查 is_paid，避免畫面舊資料造成誤刪。
-                            if execute_order_action("delete",st.session_state.pop(token_key,None)):
-                                show_save_feedback("訂單已刪除", save_and_sync())
-                                st.rerun()
+                    if c_btn2.button("🗑️",key=f"btn_delete_{row['id']}_{order_view['generation']}",
+                                     help="刪除",use_container_width=True,
+                                     on_click=request_order_delete,
+                                     args=(backup_guard.order_token(order_view,[row['id']]),str(row['item_name']))):
+                        st.rerun(scope="app")
 
                 st.markdown("<hr class='soft-divider'>", unsafe_allow_html=True)
     st.write("")
@@ -1980,7 +2022,13 @@ with tab1:
     # 編輯 Dialog 必須由主 App 流程開啟，而不是從 5 秒 fragment 內直接開啟。
     # 這樣 fragment 的週期性 rerun 不會干擾 Dialog 的 widget/session state。
     edit_request = st.session_state.get("_edit_order_request")
-    if edit_request:
+    delete_request = st.session_state.pop("_delete_order_request",None)
+    if delete_request:
+        st.session_state["_active_order_delete_request"]=delete_request
+    delete_request = st.session_state.get("_active_order_delete_request")
+    if delete_request:
+        delete_order_dialog(delete_request)
+    elif edit_request:
         st.session_state.pop("_edit_order_request", None)
         edit_order_dialog(
             edit_request["id"],
