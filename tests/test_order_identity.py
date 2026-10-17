@@ -1047,3 +1047,94 @@ class DrinkPositionAcceptance(IsolatedTest):
         self.assertEqual(ui.errors,[])
         row=self.snapshot()['orders'][-1]
         self.assertEqual((row['custom'],row['price'],row['quantity']),('L//去冰',100,2))
+
+
+class BackupNoticeRegression(IsolatedTest):
+    def setUp(self):
+        super().setUp()
+        self.remote=self.ready(); self.ui=FakeUI()
+        self.warnings=[]; self.successes=[]
+        self.ui.warning=self.warnings.append; self.ui.success=self.successes.append
+        self.env=load_app_functions(['current_backup_result'],backup_guard=self.guard,st=self.ui)
+
+    def render_notices(self):
+        self.warnings.clear(); self.successes.clear(); self.ui.errors.clear()
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        index=next(i for i,n in enumerate(tree.body) if isinstance(n,ast.Assign)
+            and any(isinstance(t,ast.Name) and t.id=='backup_notice' for t in n.targets))
+        exec(compile(ast.Module(body=tree.body[index:index+2],type_ignores=[]),str(SOURCE),'exec'),self.env)
+        bodies=[value for parent in ast.walk(tree) for _,value in ast.iter_fields(parent)
+                if isinstance(value,list)]
+        for body in bodies:
+            for i,node in enumerate(body):
+                if (isinstance(node,ast.Assign) and isinstance(node.value,ast.Call)
+                        and isinstance(node.value.func,ast.Name) and node.value.func.id=='current_backup_result'
+                        and any(isinstance(t,ast.Name) and t.id=='result' for t in node.targets)):
+                    exec(compile(ast.Module(body=body[i:i+4],type_ignores=[]),str(SOURCE),'exec'),self.env)
+                    return
+        self.fail('Admin notice block missing')
+
+    def test_both_notices_clear_after_read_only_confirmation_and_reruns(self):
+        with self.guard.exclusive():
+            state=self.guard.load_state(); state['sync']={'kind':'pending','message':'old pending'}
+            self.guard.save_state(state)
+        self.ui.session_state['github_sync_result']=self.env['current_backup_result']()
+        self.ui.session_state['github_sync_error_status']=self.guard.status()
+        self.render_notices()
+        self.assertEqual(len(self.warnings),1); self.assertEqual(len(self.ui.errors),1)
+        self.guard.startup(True,self.remote.get)
+        initialize=load_app_functions(['ensure_single_select_defaults'],db_connect=self.guard.connect)['ensure_single_select_defaults']
+        # Restore test fixture already including all defaults, then confirm it.
+        initialize(); self.assertTrue(self.guard.transfer(True,self.remote.get,self.remote.put))
+        calls=self.remote.get_calls
+        for _ in range(3):
+            initialize(); self.guard.startup(True,self.remote.get); self.render_notices()
+            self.assertEqual(self.warnings,[]); self.assertEqual(self.ui.errors,[])
+            self.assertEqual(len(self.successes),1)
+        self.assertEqual(self.remote.get_calls,calls)
+
+    def test_real_unsynced_change_keeps_both_notices(self):
+        self.write_item('not backed up')
+        self.guard.startup(True,self.remote.get); self.render_notices()
+        self.assertEqual(len(self.warnings),1); self.assertEqual(len(self.ui.errors),1)
+        self.assertEqual(self.successes,[]); self.assertEqual(self.remote.put_calls,0)
+
+    def test_session_lock_error_is_not_hidden_by_unchanged_old_success(self):
+        self.ui.session_state['github_sync_result']=('error','fake lock timeout')
+        self.ui.session_state['github_sync_error_status']=self.guard.status()
+        self.render_notices()
+        self.assertEqual(self.warnings,[])
+        self.assertEqual(self.ui.errors,['fake lock timeout'])
+        self.assertEqual(self.successes,[])
+        # Even the same content/time can be newly confirmed by another session.
+        self.assertTrue(self.guard.transfer(True,self.remote.get,self.remote.put))
+        self.render_notices()
+        self.assertEqual(self.ui.errors,[]); self.assertEqual(len(self.successes),1)
+
+    def test_explicit_pending_retry_button_only_reads_remote(self):
+        with self.guard.exclusive():
+            state=self.guard.load_state(); state['sync']={'kind':'pending','message':'old pending'}
+            self.guard.save_state(state)
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
+            and isinstance(n.test,ast.Call) and isinstance(n.test.func,ast.Attribute)
+            and n.test.func.attr=='button' and n.test.args and isinstance(n.test.args[0],ast.Constant)
+            and n.test.args[0].value=='🔎 唯讀核對 GitHub 備份')
+        self.ui.clicked.add('🔎 唯讀核對 GitHub 備份'); before=self.snapshot()
+        self.env.update(github_is_configured=lambda:True,github_get_backup=self.remote.get)
+        exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),self.env)
+        self.assertEqual(self.remote.put_calls,0); self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual(self.ui.session_state['github_sync_result'][0],'success')
+
+
+    def test_sync_failure_survives_unreadable_followup_status(self):
+        env=load_app_functions(['sync_github_backup','current_backup_result'],st=self.ui,
+            backup_guard=self.guard,github_is_configured=lambda:True,
+            github_get_backup=self.remote.get,github_put_backup=self.remote.put)
+        with patch.object(self.guard,'transfer',side_effect=RuntimeError('fake lock failure')):
+            with patch.object(self.guard,'status',side_effect=sqlite3.OperationalError('fake read failure')):
+                self.assertFalse(env['sync_github_backup']())
+        self.assertEqual(self.ui.session_state['github_sync_result'][0],'error')
+        self.assertIsNone(self.ui.session_state['github_sync_error_status'])
+        self.assertEqual(self.remote.put_calls,0)

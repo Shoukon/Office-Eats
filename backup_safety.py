@@ -231,12 +231,40 @@ class _WriteConnection(sqlite3.Connection):
     guard = None
     file_lock = None
 
+    def business_digest(self):
+        # Snapshot helpers use sqlite3.Row; preserve callers' cursor semantics.
+        row_factory = self.row_factory
+        try:
+            snapshot = export_snapshot(self, self.guard.timestamp())
+            # Detect stored changes without adding new validation rules to local
+            # writes. Remote confirmation still uses strict content_digest().
+            business = {key: snapshot[key] for key in ("members", "options", "config_shop", "orders")}
+            return hashlib.sha256(json.dumps(business, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest()
+        finally:
+            self.row_factory = row_factory
+
     def commit(self):
-        if self.in_transaction:
+        digest = self.business_digest() if self.in_transaction else self.before_digest
+        if self.in_transaction and digest != self.before_digest:
             state = self.guard.load_state()
             state["sync"] = {"kind": "pending", "message": "本機資料已變更，尚未確認 GitHub 備份。"}
-            self.guard.save_state(state)  # conservative dirty marker BEFORE commit
+            state.pop("pending_check", None)
+            self.guard.save_state(state)  # durable dirty marker BEFORE real commit
         super().commit()
+        self.before_digest = digest  # advance only after SQLite confirms commit
+
+    def __exit__(self, exc_type, exc, traceback):
+        # sqlite3's C context manager otherwise bypasses the Python override.
+        if exc_type is not None:
+            self.rollback()
+        else:
+            try:
+                self.commit()
+            except BaseException:
+                self.rollback()
+                raise
+        return False
 
     def close(self):
         try:
@@ -351,6 +379,7 @@ class BackupGuard:
                 if state["restore"] != "ready" or state.get("attempt") or state["adoption_blocked"]:
                     raise SafetyBlocked("還原或遠端寫入結果尚未確認，已阻止資料修改；請重新整理後重試核對。")
                 conn.guard = self
+                conn.before_digest = conn.business_digest()
             except BaseException:
                 conn.close()
                 raise
@@ -423,6 +452,7 @@ class BackupGuard:
                         state["sync"] = {"kind": "error", "message": "首次接管無法確認遠端資料；已保留本機資料，請重試核對。"}
                         self.save_state(state)
                         return "adoption_failed"
+                self._check_pending(conn, state, remote_get)
                 return "ready"
             if not configured:
                 # Preserve baseline's local-only setup. Later configuration must
@@ -455,8 +485,47 @@ class BackupGuard:
                 self.save_state(state)
                 return "failed"
 
+    def check_pending(self, configured, remote_get, retry=False):
+        """Read-only remote verification; never uploads or replaces local data."""
+        if not configured:
+            return False
+        with self.exclusive() as conn:
+            return self._check_pending(conn, self.load_state(), remote_get, retry)
+
+    def _check_pending(self, conn, state, remote_get, retry=False):
+        if (state["restore"] != "ready" or state["adoption_blocked"]
+                or not state["baseline_known"] or state.get("attempt")
+                or state["sync"]["kind"] != "pending"):
+            return False
+        local = export_snapshot(conn, self.timestamp())
+        check = {"digest": content_digest(local), "remote_sha": state["remote_sha"]}
+        if not retry and state.get("pending_check") == check:
+            return False
+        # Durable before GET: reruns/process restarts cannot cause a retry storm.
+        # A new local change clears this record; failures need explicit retry.
+        state["pending_check"] = check
+        self.save_state(state)
+        try:
+            remote, sha = remote_get()
+            remote = validate_backup(remote)
+            if not isinstance(sha, str) or not sha:
+                raise BackupError("缺少可確認的遠端版本。")
+            if content_digest(remote) == check["digest"]:
+                state.update(remote_sha=sha, baseline_known=True)
+                self._success(state, local)
+                self.save_state(state)
+                return True
+            message = "本機與 GitHub 備份不同；已保留雙方，請核對後再同步。"
+        except Exception:
+            message = "GitHub 備份唯讀核對未成功；本機資料已保留，請重試核對。"
+        state["sync"] = {"kind": "pending", "message": message}
+        self.save_state(state)
+        return False
+
     def _success(self, state, snapshot):
+        state.pop("pending_check", None)
         state["sync"] = {"kind": "success", "message": "本機資料與 GitHub 備份已確認一致。",
+                         "confirmation_id": uuid.uuid4().hex,
                          "at": self.timestamp(), "digest": content_digest(snapshot),
                          "members": len(snapshot["members"]), "orders": len(snapshot["orders"])}
         state["attempt"] = None
