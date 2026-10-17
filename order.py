@@ -498,6 +498,11 @@ def sync_github_backup(show_error=False):
     except Exception:
         ok=False
         st.session_state["github_sync_result"]=("error", "⚠️ 備份同步未完成；本機資料未因同步失敗而取消，請重新整理後核對／重試。")
+    try:
+        observed_status=backup_guard.status() if not ok else None
+    except Exception:
+        observed_status=None  # keep the original failure if status is unreadable
+    st.session_state["github_sync_error_status"]=observed_status
     if not ok and show_error:
         st.error(st.session_state["github_sync_result"][1])
     return ok
@@ -926,7 +931,13 @@ with st.sidebar:
         # concealed by a previous successful shared backup status.
         session_result=st.session_state.get("github_sync_result")
         if session_result and session_result[0]=="error":
-            result=session_result
+            # Keep errors tied to the status observed by that attempt; a later
+            # shared confirmation must not leave this session showing old errors.
+            if (result[0]!="success" or
+                    st.session_state.get("github_sync_error_status")==backup_guard.status()):
+                result=session_result
+            else:
+                st.session_state["github_sync_result"]=result
         if result:
             kind,msg=result
             if kind == "success":
@@ -942,6 +953,12 @@ with st.sidebar:
 
         ok,msg=test_github_encryption_key()
         st.caption("🔐 encryption_key：正常" if ok else f"🔐 encryption_key：{msg}")
+
+        if st.button("🔎 唯讀核對 GitHub 備份",use_container_width=True):
+            if backup_guard.check_pending(github_is_configured(),github_get_backup,retry=True):
+                st.session_state["github_sync_result"]=current_backup_result()
+                st.session_state["github_sync_error_status"]=None
+            st.rerun()
 
         if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary"):
             if sync_github_backup(show_error=True): st.toast("✅ 已同步到 GitHub")

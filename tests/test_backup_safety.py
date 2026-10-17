@@ -674,3 +674,185 @@ class GitHubAdapterTests(IsolatedTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PendingStateRegression(IsolatedTest):
+    def setUp(self):
+        super().setUp()
+        self.remote=self.ready()
+
+    def old_pending(self):
+        with self.guard.exclusive():
+            state=self.guard.load_state()
+            state['sync']={'kind':'pending','message':'old no-change commit'}
+            self.guard.save_state(state)
+
+    def test_repeated_default_checks_preserve_confirmed_success(self):
+        initialize=load_app_functions(['ensure_single_select_defaults'],db_connect=self.guard.connect)['ensure_single_select_defaults']
+        initialize()
+        self.assertTrue(self.guard.transfer(True,self.remote.get,self.remote.put))
+        before=self.guard.load_state(); calls=self.remote.get_calls
+        for _ in range(3):
+            initialize()
+            self.guard.startup(True,self.remote.get)
+            self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual(self.guard.load_state(),before)
+        self.assertEqual(self.remote.get_calls,calls)
+
+    def test_same_value_update_and_reverted_update_are_not_dirty(self):
+        before=self.guard.load_state()
+        for revert in (False,True):
+            conn=self.guard.connect(write=True)
+            try:
+                if revert: conn.execute("UPDATE orders SET item_name='temporary' WHERE id=1")
+                conn.execute('UPDATE orders SET item_name=? WHERE id=1',(fixture()['orders'][0]['item_name'],))
+                conn.commit()
+            finally: conn.close()
+            self.assertEqual(self.guard.load_state(),before)
+
+    def test_real_change_marks_pending_before_commit_and_sync_recovers(self):
+        original=self.guard.save_state; observed=[]
+        def save(state):
+            if state['sync']['kind']=='pending':
+                observed.append(self.snapshot()['orders'][0]['item_name'])
+            original(state)
+        with patch.object(self.guard,'save_state',save): self.write_item('changed')
+        self.assertEqual(observed,[fixture()['orders'][0]['item_name']])
+        self.assertEqual(self.guard.load_state()['sync']['kind'],'pending')
+        self.assertTrue(self.guard.transfer(True,self.remote.get,self.remote.put))
+        self.assertEqual(self.guard.status()['kind'],'success')
+        conn=self.guard.connect(write=True)
+        try: conn.commit()
+        finally: conn.close()
+        self.assertEqual(self.guard.status()['kind'],'success')
+
+    def test_actual_sqlite_commit_failure_keeps_marker_and_rolls_back(self):
+        before=self.snapshot(); conn=self.guard.connect(write=True)
+        try:
+            conn.execute("UPDATE orders SET item_name='uncommitted' WHERE id=1")
+            conn.set_authorizer(lambda action,arg,*rest:sqlite3.SQLITE_DENY
+                if action==sqlite3.SQLITE_TRANSACTION and arg=='COMMIT' else sqlite3.SQLITE_OK)
+            with self.assertRaises(sqlite3.DatabaseError): conn.commit()
+            self.assertEqual(self.guard.load_state()['sync']['kind'],'pending')
+            conn.set_authorizer(None); conn.rollback()
+        finally: conn.close()
+        self.assertEqual(self.snapshot(),before)
+        self.guard.startup(True,self.remote.get)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual(self.remote.put_calls,0)
+
+    def test_connection_context_cannot_bypass_dirty_marker(self):
+        conn=self.guard.connect(write=True)
+        try:
+            with conn: conn.execute("UPDATE orders SET item_name='context changed' WHERE id=1")
+        finally: conn.close()
+        self.assertEqual(self.guard.load_state()['sync']['kind'],'pending')
+
+    def test_old_pending_equal_remote_recovers_once_without_put(self):
+        self.old_pending(); before=self.snapshot(); calls=self.remote.get_calls
+        self.guard.startup(True,self.remote.get)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.put_calls,0)
+        self.assertEqual(self.remote.get_calls,calls+1)
+        for _ in range(3): self.guard.startup(True,self.remote.get)
+        self.assertEqual(self.remote.get_calls,calls+1)
+
+    def test_changed_local_or_changed_remote_does_not_clear_warning(self):
+        for local_change in (True,False):
+            with self.subTest(local_change=local_change):
+                if local_change: self.write_item('local only')
+                else: self.remote.data=fixture('remote only')
+                before=self.snapshot(); remote=copy.deepcopy(self.remote.data)
+                self.guard.startup(True,self.remote.get)
+                self.assertNotEqual(self.guard.status()['kind'],'success')
+                self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.data,remote)
+                self.assertEqual(self.remote.put_calls,0)
+
+    def test_failed_read_checks_once_then_explicit_read_only_retry(self):
+        self.old_pending(); self.remote.fail_get=True; calls=self.remote.get_calls
+        for _ in range(3): self.guard.startup(True,self.remote.get)
+        self.assertEqual(self.remote.get_calls,calls+1)
+        self.assertNotEqual(self.guard.status()['kind'],'success')
+        self.remote.fail_get=False
+        self.assertTrue(self.guard.check_pending(True,self.remote.get,retry=True))
+        self.assertEqual(self.guard.status()['kind'],'success'); self.assertEqual(self.remote.put_calls,0)
+
+    def test_invalid_remote_or_missing_sha_cannot_confirm(self):
+        for remote in (({},'fake'),(fixture(),None),(None,None)):
+            self.old_pending(); before=self.snapshot()
+            self.assertFalse(self.guard.check_pending(True,lambda:remote,retry=True))
+            self.assertNotEqual(self.guard.status()['kind'],'success')
+            self.assertEqual(self.snapshot(),before); self.assertEqual(self.remote.put_calls,0)
+
+    def test_uncertain_put_is_not_recovered_as_plain_pending(self):
+        self.write_item('target'); self.remote.mode='lost_response_get_fail'
+        self.assertFalse(self.guard.transfer(True,self.remote.get,self.remote.put))
+        state=self.guard.load_state(); before=self.snapshot(); calls=self.remote.get_calls
+        self.assertFalse(self.guard.check_pending(True,self.remote.get,retry=True))
+        self.assertEqual(self.guard.load_state(),state); self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.remote.get_calls,calls); self.assertEqual(self.remote.put_calls,1)
+
+    def test_error_status_is_not_silently_reclassified(self):
+        with self.guard.exclusive():
+            state=self.guard.load_state(); state['sync']={'kind':'error','message':'fake error'}
+            self.guard.save_state(state)
+        self.assertFalse(self.guard.check_pending(True,self.remote.get,retry=True))
+        self.assertEqual(self.guard.status()['kind'],'error')
+
+    def test_new_guard_does_not_repeat_failed_check(self):
+        self.old_pending(); self.remote.fail_get=True
+        self.guard.startup(True,self.remote.get); calls=self.remote.get_calls
+        second=BackupGuard(self.db,lambda:NOW)
+        second.startup(True,self.remote.get)
+        self.assertEqual(self.remote.get_calls,calls)
+
+
+    def test_nonbusiness_sql_does_not_dirty_backup(self):
+        before=self.guard.load_state()
+        conn=self.guard.connect(write=True)
+        try:
+            conn.execute('CREATE TABLE test_only_metadata(value TEXT)')
+            conn.execute("INSERT INTO test_only_metadata VALUES('fake')")
+            conn.commit()
+        finally: conn.close()
+        self.assertEqual(self.guard.load_state(),before)
+
+    def test_crash_after_marker_before_sqlite_commit_keeps_original_data(self):
+        before=self.snapshot(); original=self.guard.save_state
+        def crash(state):
+            original(state)
+            if state['sync']['kind']=='pending': raise RuntimeError('fake crash before commit')
+        conn=self.guard.connect(write=True)
+        try:
+            conn.execute("UPDATE orders SET item_name='not committed' WHERE id=1")
+            with patch.object(self.guard,'save_state',crash):
+                with self.assertRaises(RuntimeError): conn.commit()
+        finally: conn.close()
+        self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.guard.load_state()['sync']['kind'],'pending')
+        self.guard.startup(True,self.remote.get)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual(self.remote.put_calls,0)
+
+
+    def test_journal_write_failure_prevents_business_commit(self):
+        before=self.snapshot(); state=self.guard.load_state()
+        conn=self.guard.connect(write=True)
+        try:
+            conn.execute("UPDATE orders SET item_name='must rollback' WHERE id=1")
+            with patch.object(self.guard,'save_state',side_effect=OSError('fake journal failure')):
+                with self.assertRaises(OSError): conn.commit()
+            conn.rollback()
+        finally: conn.close()
+        self.assertEqual(self.snapshot(),before); self.assertEqual(self.guard.load_state(),state)
+
+    def test_context_exception_rolls_back_without_claiming_change(self):
+        before=self.snapshot(); state=self.guard.load_state()
+        conn=self.guard.connect(write=True)
+        try:
+            with self.assertRaises(RuntimeError):
+                with conn:
+                    conn.execute("UPDATE orders SET item_name='must rollback' WHERE id=1")
+                    raise RuntimeError('fake body failure')
+        finally: conn.close()
+        self.assertEqual(self.snapshot(),before); self.assertEqual(self.guard.load_state(),state)
