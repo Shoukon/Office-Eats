@@ -1,0 +1,63 @@
+name: Isolated business tests
+on:
+  pull_request:
+    paths:
+      - 'order.py'
+      - 'backup_safety.py'
+      - 'tests/**'
+      - 'requirements*.txt'
+      - '.github/workflows/business-tests.yml'
+      - '.devcontainer/devcontainer.json'
+  push:
+    branches: [main]
+    paths:
+      - 'order.py'
+      - 'backup_safety.py'
+      - 'tests/**'
+      - 'requirements*.txt'
+      - '.github/workflows/business-tests.yml'
+      - '.devcontainer/devcontainer.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  business:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.12.14'
+            requirements: requirements-test.txt
+          - python: '3.13.16'
+            requirements: requirements-cloud-check.txt
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: tests:.
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /order.py
+            /backup_safety.py
+            /requirements-test.txt
+            /requirements-cloud-check.txt
+            /.devcontainer/devcontainer.json
+            /tests/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test dependencies (no production Secrets)
+        run: python -m pip install -r "${{ matrix.requirements }}"
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Run isolated business tests (never start order.py)
+        run: >-
+          python -B -m unittest -q
+          test_backup_safety test_final_acceptance test_order_identity
+          test_member_order_identity test_member_rename_acceptance test_member_rename_concurrency

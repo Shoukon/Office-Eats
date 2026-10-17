@@ -2,6 +2,7 @@
 import copy
 import sqlite3
 import threading
+import unittest
 from types import SimpleNamespace
 
 from backup_safety import BackupGuard, BackupError, parse_backup
@@ -98,3 +99,15 @@ class FinalAcceptanceTests(IsolatedTest):
         self.assertFalse(loser.transfer(True, remote.get, remote.put))
         self.assertEqual(remote.put_calls, put_calls)  # retry does not adopt a new SHA
         self.assertEqual(remote.data, remote_before)
+
+
+class DevelopmentSettingsTests(unittest.TestCase):
+    def test_devcontainer_keeps_default_cors_and_xsrf_protection(self):
+        import json
+        from pathlib import Path
+        raw=(Path(__file__).resolve().parents[1]/'.devcontainer'/'devcontainer.json').read_text(encoding='utf-8')
+        config=json.loads('\n'.join(line for line in raw.splitlines() if not line.lstrip().startswith('//')))
+        command=config['postAttachCommand']['server']
+        self.assertEqual(command,'streamlit run order.py')
+        self.assertNotIn('enableCORS',command)
+        self.assertNotIn('enableXsrfProtection',command)

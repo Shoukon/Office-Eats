@@ -741,6 +741,7 @@ def move_member(member_id,direction):
 @st.dialog("👥 管理點餐人員",width="large")
 def manage_members_dialog():
     st.caption("名單儲存在 lunch.db，並會加密同步到 GitHub。")
+    st.caption("刪除人員會保留既有訂單；重新新增同名人員時，仍會依姓名顯示這些訂單。")
     members=get_members()
     for _,row in members.iterrows():
         mid,name=int(row["id"]),str(row["name"])
@@ -765,7 +766,7 @@ def manage_members_dialog():
             if st.button("🗑️ 刪除這位人員",key=f"delete_member_{mid}",use_container_width=True):
                 st.session_state[f"confirm_delete_member_{mid}"]=True
             if st.session_state.get(f"confirm_delete_member_{mid}",False):
-                st.warning(f"確定要刪除「{name}」嗎？")
+                st.warning(f"確定要刪除「{name}」嗎？既有訂單會保留，日後新增同名人員仍可能對應這些訂單。")
                 d1,d2=st.columns(2)
                 with d1:
                     if st.button("取消",key=f"cancel_delete_{mid}",use_container_width=True):
@@ -1023,6 +1024,13 @@ def render_stats_section():
         st.info("📦 目前尚無訂單，等待第一筆資料...")
         return
 
+    # Per-fragment snapshot only: discarded on every render, never a TTL cache.
+    stats_options={}
+    def stats_values(category):
+        if category not in stats_options:
+            stats_options[category]=get_options(category)
+        return stats_options[category]
+
     def parse_stats_custom(category, raw_custom):
         """
         店家統計看板顯示與排序。
@@ -1045,8 +1053,8 @@ def render_stats_section():
         parts = [p.strip() for p in raw.split(",") if p is not None and p.strip()]
 
         if category == "主餐":
-            main_sizes=get_options("main_size")
-            spicy_options=get_options("spicy")
+            main_sizes=stats_values("main_size")
+            spicy_options=stats_values("spicy")
             size_order={value:idx for idx,value in enumerate(main_sizes)}
             spicy_order={value:idx for idx,value in enumerate(spicy_options)}
 
@@ -1077,9 +1085,9 @@ def render_stats_section():
             )
 
         if category == "飲料":
-            drink_sizes=get_options("drink_size")
-            sugar_options=get_options("sugar")
-            ice_options=get_options("ice")
+            drink_sizes=stats_values("drink_size")
+            sugar_options=stats_values("sugar")
+            ice_options=stats_values("ice")
             size_order={value:idx for idx,value in enumerate(drink_sizes)}
             sugar_order={value:idx for idx,value in enumerate(sugar_options)}
             ice_order={value:idx for idx,value in enumerate(ice_options)}

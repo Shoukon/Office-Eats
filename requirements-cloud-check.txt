@@ -1,0 +1,6 @@
+# CI compatibility target observed in Cloud logs on 2026-10-17.
+# Not a change to production requirements; CI must establish compatibility.
+streamlit==1.66.0
+pandas==3.0.6
+cryptography==50.0.2
+tzdata==2026.5

@@ -1017,7 +1017,7 @@ class DrinkPositionAcceptance(IsolatedTest):
     def test_stats_preserve_empty_positions_and_retired_text(self):
         tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
         parser=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='parse_stats_custom')
-        scope={'get_options':lambda cat:{'drink_size':['M','L'],'sugar':['少糖','無糖'],'ice':['少冰','去冰']}[cat]}
+        scope={'stats_values':lambda cat:{'drink_size':['M','L'],'sugar':['少糖','無糖'],'ice':['少冰','去冰']}[cat]}
         exec(compile(ast.Module(body=[parser],type_ignores=[]),str(SOURCE),'exec'),scope)
         for raw,weights in [('L//去冰',(1,0,1)),('/無糖/去冰',(99,1,1)),('L/無糖/',(1,1,0))]:
             with self.subTest(raw=raw):
@@ -1138,3 +1138,49 @@ class BackupNoticeRegression(IsolatedTest):
         self.assertEqual(self.ui.session_state['github_sync_result'][0],'error')
         self.assertIsNone(self.ui.session_state['github_sync_error_status'])
         self.assertEqual(self.remote.put_calls,0)
+
+
+class StatsQueryCountTests(IsolatedTest):
+    def setUp(self):
+        super().setUp(); self.ready()
+        self.queries=[]; self.observed=[]; self.ui=FakeUI(); self.markdown=[]
+        self.ui.markdown=lambda text,**kw:self.markdown.append(text)
+        def read(query,params=()):
+            self.queries.append(params[0])
+            conn=self.guard.connect()
+            try:
+                frame=pd.read_sql_query(query,conn,params=params)
+                self.observed.append(frame['option_value'].tolist())
+                return frame
+            finally: conn.close()
+        self.env=load_app_functions(['render_stats_section','get_options'],
+            st=self.ui,pd=pd,html=__import__('html'),get_db=read,
+            get_current_shop_names=lambda:{'main':'Fake','drink':'Fake'},
+            taiwan_now_str=lambda:NOW)
+
+    def render(self, count, category='主餐'):
+        row=fixture()['orders'][0]; row.update(category=category,
+            custom='無, 微辣' if category=='主餐' else 'L//去冰')
+        self.env['get_orders_df']=lambda:pd.DataFrame([dict(row,id=i+1) for i in range(count)])
+        self.env['render_stats_section']()
+
+    def test_twenty_meals_read_two_option_categories_once_each(self):
+        self.render(20)
+        self.assertEqual(self.queries,['main_size','spicy'])
+        self.assertTrue(any('共 20 份' in text for text in self.markdown))
+
+    def test_twenty_drinks_read_three_option_categories_once_each(self):
+        self.render(20,'飲料')
+        self.assertEqual(self.queries,['drink_size','sugar','ice'])
+        self.assertTrue(any('去冰' in text for text in self.markdown))
+
+    def test_next_render_rereads_edited_settings(self):
+        self.render(20)
+        conn=self.guard.connect(write=True)
+        try:
+            conn.execute("INSERT INTO order_options(category,option_value,sort_order,is_default) VALUES('spicy','微辣',0,1)")
+            conn.commit()
+        finally: conn.close()
+        self.render(20)
+        self.assertEqual(self.queries,['main_size','spicy','main_size','spicy'])
+        self.assertEqual(self.observed[-1],['微辣'])
