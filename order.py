@@ -397,15 +397,15 @@ def order_custom_items(data, normalize=False):
     return sorted(items) if normalize else items  # never deduplicate
 
 
-def display_order_custom(raw, category, normalized=False):
+def display_order_custom(raw, category, normalized=False, concise=False):
     data = decode_order_custom(raw, category)
     if data is None:
         return str(raw or "")  # never parse/reclassify an unmarked main order
     labels = ("尺寸", "辣度") if category == "主餐" else ("尺寸", "甜度", "冰塊")
-    parts = [f"{label}：{value}" for label, value in zip(labels, data["fixed"])
+    parts = [value if concise else f"{label}：{value}" for label, value in zip(labels, data["fixed"])
              if value and not (category == "主餐" and value == "無")]
     free = order_custom_items(data, normalized)
-    if free: parts.append("客製：" + "・".join(free))
+    if free: parts.append(("" if concise else "客製：") + "・".join(free))
     return "・".join(parts)
 
 
@@ -1182,7 +1182,7 @@ def render_stats_section():
             weights = [stats_values(cat).index(value) if value in stats_values(cat) else fallback
                        for cat, value, fallback in zip(categories, typed["fixed"], fallbacks)]
             if category == "主餐": weights.append(0)
-            return (display_order_custom(raw_custom, category, True), *weights,
+            return (display_order_custom(raw_custom, category, normalized=True, concise=True), *weights,
                     json.dumps(order_custom_items(typed, True), ensure_ascii=False))
         raw = str(raw_custom or "").strip()
         if not raw:
@@ -1880,6 +1880,7 @@ def render_my_orders(user_name):
     with st.expander(f"📋 {html.escape(str(user_name))} 的訂單（合計：${my_sum}）", expanded=True if not my_orders.empty else False):
         if my_orders.empty: st.caption("目前尚無訂單")
         else:
+            display_options = {}  # this render only; no cross-rerun cache
             for _, row in my_orders.iterrows():
                 c_icon, c_info, c_btn1, c_btn2 = st.columns([0.4, 4.5, 0.7, 0.7], vertical_alignment="center")
 
@@ -1887,7 +1888,19 @@ def render_my_orders(user_name):
 
                 safe_item_name = html.escape(str(row["item_name"]))
                 safe_cst_html = ""
-                custom_text = display_order_custom(str(row['custom']), str(row['category']))
+                raw_custom, category = str(row['custom']), str(row['category'])
+                display_custom = raw_custom
+                if decode_order_custom(raw_custom, category) is not None:
+                    if category not in display_options:
+                        fields = ("main_size", "spicy") if category == "主餐" else ("drink_size", "sugar", "ice")
+                        try:
+                            display_options[category] = {field: get_options(field) for field in fields}
+                        except sqlite3.OperationalError:
+                            display_options[category] = None
+                            st.warning("⚠️ 暫時無法讀取客製設定，以下訂單保留原有欄位顯示，請稍後重新整理。")
+                    if display_options[category] is not None:
+                        display_custom = statistics_custom(raw_custom, category, display_options[category])
+                custom_text = display_order_custom(display_custom, category, normalized=True, concise=True)
                 if custom_text:
                     safe_custom = html.escape(custom_text)
                     safe_cst_html = f'<div class="custom-text">{safe_custom}</div>'
