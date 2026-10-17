@@ -1805,6 +1805,7 @@ class TypedCustomAcceptance(IsolatedTest):
         harness=OrderUIIntegrationTests();harness.guard=self.guard;ui=FakeUI();marks=[]
         ui.markdown=lambda text,**kw:marks.append(text);env=harness.env(ui,[])
         env['render_my_orders']('測試甲');view=self.guard.order_snapshot()
+        self.assertTrue(any('>A・Z</div>' in m for m in marks)); marks.clear()
         env['_pay_logic_grouped']('主餐',pd.DataFrame(view['rows'],columns=ORDER_FIELDS),'main',view)
         self.assertTrue(any('客製：Z・A' in m for m in marks))
         self.assertFalse(any('@OfficeEats.Custom/' in m for m in marks))
@@ -1958,7 +1959,7 @@ class SemanticCustomAcceptance(IsolatedTest):
         rows = self.groups([self.meal('不要瓜類,小辣',spicy='無'),
                             self.meal('小辣,不要瓜類',spicy=''), self.meal('不要瓜類')])
         self.assertEqual(len(rows),1); self.assertIn('×3',rows[0])
-        self.assertIn('辣度：小辣',rows[0]); self.assertIn('客製：不要瓜類',rows[0])
+        self.assertIn('小辣・不要瓜類',rows[0]); self.assertNotIn('辣度：',rows[0]); self.assertNotIn('客製：',rows[0])
         self.assertIn(('本區總額','$360'), self.last_metrics)
         self.assertTrue(any('共 3 份' in text for text in self.last_marks))
 
@@ -2049,3 +2050,154 @@ class SemanticCustomAcceptance(IsolatedTest):
         a=self.meal('小辣,加蛋,加蛋',spicy='無');b=self.meal('加蛋,加蛋')
         rows=self.groups([a,b,self.meal('加蛋')])
         self.assertEqual(len(rows),2);self.assertTrue(any('×2' in row and '加蛋・加蛋' in row for row in rows))
+
+
+class OrderEntryCustomDisplayTests(IsolatedTest):
+    groups = TypedCustomAcceptance.groups
+    meal = TypedCustomAcceptance.meal
+    drink = TypedCustomAcceptance.drink
+
+    def setUp(self):
+        super().setUp()
+        self.codec=load_app_functions(['encode_order_custom','decode_order_custom'])
+        self.encode=self.codec['encode_order_custom']; self.decode=self.codec['decode_order_custom']
+        self.options={'main_size':['無','小份','大份'],'spicy':['無','小辣','大辣'],
+                      'drink_size':['中杯','大杯'],'sugar':['無糖','半糖'],'ice':['去冰','正常冰']}
+
+    def render(self,customs,category='主餐',fail_options=False):
+        import re
+        data=fixture();base=data['orders'][0]
+        data['orders']=[dict(base,id=i+1,category=category,custom=raw) for i,raw in enumerate(customs)]
+        remote=self.ready(data); before=self.snapshot(); state=copy.deepcopy(self.guard.load_state())
+        ui=FakeUI();marks=[];warnings=[];synced=[];queries=[]
+        ui.markdown=lambda text,**kw:marks.append(text);ui.warning=warnings.append
+        harness=OrderUIIntegrationTests();harness.guard=self.guard;env=harness.env(ui,synced)
+        def options(field):
+            queries.append(field)
+            if fail_options:raise sqlite3.OperationalError('fake read failure')
+            return self.options.get(field,[])
+        env['get_options']=options
+        env['render_my_orders']('測試甲')
+        self.assertEqual(self.snapshot(),before);self.assertEqual(self.guard.load_state(),state)
+        self.assertEqual(synced,[]);self.assertEqual(remote.put_calls,0)
+        self.marks=marks;self.warnings=warnings;self.queries=queries;self.ui=ui
+        return [value for text in marks for value in re.findall(r'<div class="custom-text">(.*?)</div>',text)]
+
+    def test_meal_fixed_and_manual_spicy_render_the_same_three_labels(self):
+        labels=self.render([self.meal('不要瓜類',size='無'),
+                            self.meal('小辣,不要瓜類',size='無',spicy='無'),
+                            self.meal('不要瓜類,小辣',size='無',spicy='')])
+        self.assertEqual(labels,['小辣・不要瓜類']*3)
+
+    def test_free_items_have_stable_order_without_losing_duplicates(self):
+        labels=self.render([self.meal('Z,A,A'),self.meal('A,Z,A')])
+        self.assertEqual(labels,['大份・小辣・A・A・Z']*2)
+
+    def test_meal_size_and_spicy_remain_distinct_in_fixed_order(self):
+        labels=self.render([self.meal(),self.meal(size='小份'),self.meal(spicy='大辣')])
+        self.assertEqual(labels,['大份・小辣','小份・小辣','大份・大辣'])
+
+    def test_drink_fixed_and_manual_values_render_in_fixed_order(self):
+        labels=self.render([self.drink('Z,A'),self.drink('去冰,Z,大杯,無糖,A',size='',sugar='',ice='')],'飲料')
+        self.assertEqual(labels,['大杯・無糖・去冰・A・Z']*2)
+
+    def test_drink_empty_slots_do_not_shift_following_fields(self):
+        labels=self.render([self.drink('',sugar=''),self.drink('',size=''),self.drink('',ice='')],'飲料')
+        self.assertEqual(labels,['大杯・去冰','無糖・去冰','大杯・無糖'])
+
+    def test_legacy_text_keeps_exact_display_and_is_not_guessed(self):
+        labels=self.render(['小辣, 不要瓜類','不要瓜類,小辣'])
+        self.assertEqual(labels,['小辣, 不要瓜類','不要瓜類,小辣']);self.assertEqual(self.queries,[])
+        self.assertEqual(self.render(['大杯//去冰, Z,A'],'飲料'),['大杯//去冰, Z,A'])
+
+    def test_conflicts_and_duplicate_options_are_not_erased(self):
+        labels=self.render([self.meal('大辣,加蛋'),self.meal('小辣,小辣,加蛋',spicy='無')])
+        self.assertEqual(labels,['大份・小辣・加蛋・大辣',
+                                 '大份・加蛋・小辣・小辣'])
+
+    def test_rendered_html_stays_escaped_and_does_not_show_encoding(self):
+        labels=self.render([self.drink('<b>A/B</b>,Z')],'飲料')
+        self.assertIn('&lt;b&gt;A/B&lt;/b&gt;',labels[0]);self.assertNotIn('<b>',labels[0])
+        self.assertFalse(any('@OfficeEats.Custom/' in text for text in self.marks))
+
+    def test_options_read_once_per_render_and_changes_are_seen_on_next_render(self):
+        raw=self.meal('小辣,加蛋',spicy='無')
+        self.render([raw]*20);self.assertEqual(self.queries,['main_size','spicy'])
+        self.options['spicy'].remove('小辣')
+        self.assertEqual(self.render([raw]),['大份・加蛋・小辣'])
+
+    def test_option_read_failure_warns_once_and_preserves_original_field_display(self):
+        raw=self.meal('小辣,加蛋',spicy='無')
+        labels=self.render([raw,raw],fail_options=True)
+        self.assertEqual(labels,['大份・加蛋・小辣']*2)
+        self.assertEqual(len(self.warnings),1);self.assertEqual(self.queries,['main_size'])
+
+    def test_empty_typed_custom_has_no_encoded_or_empty_custom_block(self):
+        labels=self.render([self.meal('',size='無',spicy='無')])
+        self.assertEqual(labels,[]);self.assertFalse(any('@OfficeEats.Custom/' in text for text in self.marks))
+
+    def test_native_streamlit_renders_equivalent_main_and_drink_labels_without_writes(self):
+        data=fixture();base=data['orders'][0]
+        customs=[('主餐',self.meal('不要瓜類',size='無')),
+                 ('主餐',self.meal('小辣,不要瓜類',size='無',spicy='無')),
+                 ('飲料',self.drink('Z,A')),
+                 ('飲料',self.drink('去冰,Z,無糖,A,大杯',size='',sugar='',ice=''))]
+        data['orders']=[dict(base,id=i+1,category=cat,custom=raw) for i,(cat,raw) in enumerate(customs)]
+        self.ready(data);before=self.snapshot();state=copy.deepcopy(self.guard.load_state())
+        import tempfile
+        previous=tempfile.tempdir;tempfile.tempdir=str(self.db.parent)
+        try:
+            from streamlit.testing.v1 import AppTest
+        finally:tempfile.tempdir=previous
+        script="""import streamlit as st
+import pandas as pd
+import sqlite3,html
+from backup_safety import BackupGuard,ORDER_FIELDS,SafetyBlocked
+from test_backup_safety import load_app_functions,NOW
+env=load_app_functions(['render_my_orders','remember_order_token','request_order_delete'],
+    st=st,pd=pd,html=html,backup_guard=BackupGuard(DB,lambda:NOW),SafetyBlocked=SafetyBlocked,
+    ORDER_COLUMNS=list(ORDER_FIELDS),get_options=lambda field:OPTIONS[field])
+env['render_my_orders']('測試甲')
+"""
+        path=self.db.parent/'fake_order_display.py'
+        path.write_text('DB='+repr(str(self.db))+'\nOPTIONS='+repr(self.options)+'\n'+script,encoding='utf-8')
+        app=AppTest.from_file(str(path));app.secrets={'fake_only':True};app.run()
+        self.assertEqual(len(app.exception),0)
+        rendered=[m.value for m in app.markdown if 'class="custom-text"' in m.value]
+        self.assertEqual(len(rendered),4)
+        self.assertTrue(all('小辣・不要瓜類' in text for text in rendered[:2]))
+        self.assertTrue(all('大杯・無糖・去冰・A・Z' in text for text in rendered[2:]))
+        self.assertFalse(any('@OfficeEats.Custom/' in text for text in rendered))
+        self.assertEqual(self.snapshot(),before);self.assertEqual(self.guard.load_state(),state)
+
+    def test_summary_three_equivalent_meals_show_one_concise_label_and_correct_totals(self):
+        rows=self.groups([self.meal('不要瓜類',size='無'),self.meal('小辣,不要瓜類',size='無',spicy='無'),
+                          self.meal('不要瓜類,小辣',size='無',spicy='')])
+        self.assertEqual(len(rows),1);self.assertIn('小辣・不要瓜類 ×3',rows[0])
+        self.assertIn(('本區總額','$360'),self.last_metrics)
+        for prefix in ['尺寸：','辣度：','客製：']:self.assertNotIn(prefix,rows[0])
+
+    def test_drink_summary_keeps_fixed_order_and_matches_homepage_labels(self):
+        customs=[self.drink('加椰果'),self.drink('去冰,加椰果,大杯,無糖',size='',sugar='',ice='')]
+        rows=self.groups(customs,'飲料')
+        self.assertEqual(len(rows),1);self.assertIn('大杯・無糖・去冰・加椰果 ×2',rows[0])
+        self.assertIn(('本區總額','$220'),self.last_metrics)
+        self.assertEqual(self.render(customs,'飲料'),['大杯・無糖・去冰・加椰果']*2)
+
+    def test_single_item_and_empty_custom_have_no_extra_separators(self):
+        self.assertEqual(self.render([self.meal('加蛋',size='無',spicy='無')]),['加蛋'])
+        rows=self.groups([self.meal('加蛋',size='無',spicy='無'),self.meal('',size='無',spicy='無')])
+        self.assertTrue(any('加蛋 ×1' in row for row in rows));self.assertTrue(any('無客製 ×1' in row for row in rows))
+        self.assertFalse(any('・・' in row for row in rows))
+
+    def test_identical_visible_labels_do_not_merge_different_semantic_keys(self):
+        # The dot inside a single literal item is not an item separator.
+        a=self.meal('加蛋');b=self.meal('小辣・加蛋',spicy='無')
+        rows=self.groups([a,b])
+        self.assertEqual(len(rows),2);self.assertTrue(all('大份・小辣・加蛋 ×1' in row for row in rows))
+        self.assertIn(('本區總額','$220'),self.last_metrics)
+
+    def test_label_like_text_inside_manual_input_is_not_deleted(self):
+        raw=self.meal('辣度：小辣,客製：不要瓜類',size='無',spicy='無')
+        self.assertEqual(self.render([raw]),['客製：不要瓜類・辣度：小辣'])
+        self.assertIn('客製：不要瓜類・辣度：小辣 ×1',self.groups([raw])[0])
