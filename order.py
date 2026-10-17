@@ -1024,6 +1024,13 @@ def render_stats_section():
         st.info("📦 目前尚無訂單，等待第一筆資料...")
         return
 
+    # Per-fragment snapshot only: discarded on every render, never a TTL cache.
+    stats_options={}
+    def stats_values(category):
+        if category not in stats_options:
+            stats_options[category]=get_options(category)
+        return stats_options[category]
+
     def parse_stats_custom(category, raw_custom):
         """
         店家統計看板顯示與排序。
@@ -1046,8 +1053,8 @@ def render_stats_section():
         parts = [p.strip() for p in raw.split(",") if p is not None and p.strip()]
 
         if category == "主餐":
-            main_sizes=get_options("main_size")
-            spicy_options=get_options("spicy")
+            main_sizes=stats_values("main_size")
+            spicy_options=stats_values("spicy")
             size_order={value:idx for idx,value in enumerate(main_sizes)}
             spicy_order={value:idx for idx,value in enumerate(spicy_options)}
 
@@ -1078,9 +1085,9 @@ def render_stats_section():
             )
 
         if category == "飲料":
-            drink_sizes=get_options("drink_size")
-            sugar_options=get_options("sugar")
-            ice_options=get_options("ice")
+            drink_sizes=stats_values("drink_size")
+            sugar_options=stats_values("sugar")
+            ice_options=stats_values("ice")
             size_order={value:idx for idx,value in enumerate(drink_sizes)}
             sugar_order={value:idx for idx,value in enumerate(sugar_options)}
             ice_order={value:idx for idx,value in enumerate(ice_options)}
