@@ -328,7 +328,8 @@ class FakeUI:
     def __enter__(self): return self
     def __exit__(self, *args): return False
     def dialog(self, *args, **kwargs): return lambda fn: fn
-    def fragment(self, *args, **kwargs): return lambda fn: fn
+    def fragment(self, *args, **kwargs):
+        return args[0] if args and callable(args[0]) else lambda fn: fn
     def columns(self, widths, **kwargs): return [self] * (widths if isinstance(widths, int) else len(widths))
     def container(self, *args, **kwargs): return self
     def expander(self, *args, **kwargs): return self
@@ -1382,3 +1383,224 @@ for parent in ast.walk(tree):
         confirm=next(b for b in app.button if b.label=='確認刪除')
         self.assertEqual(confirm.proto.type,'primary')
         self.assertNotIn('⭕',confirm.label)
+
+
+class EntryRerun(Exception):
+    pass
+
+
+class EntryFragmentAcceptance(IsolatedTest):
+    """Direct fragment-body tests; timer scheduling and browser clicks are not simulated."""
+    def setUp(self):
+        super().setUp()
+        self.remote=self.ready(); self.ui=FakeUI()
+        self.ui.session_state.update(m_name='Fake meal',d_name='Fake drink',m_price=100,d_price=50,
+            m_qty=1,d_qty=1,m_custom_tags=[],m_custom_manual='',d_custom_tags=[],d_custom_manual='')
+        self.ui.text_input=lambda label,**kw:self.ui.session_state.get(kw.get('key'),kw.get('value',''))
+        self.ui.number_input=lambda label,**kw:self.ui.session_state.get(kw.get('key'),kw.get('value',0))
+        self.scopes=[]
+        def rerun(**kw):
+            self.scopes.append(kw.get('scope','app')); raise EntryRerun()
+        self.ui.rerun=rerun
+        self.env=load_app_functions(['render_order_entry','db_connect','get_db','get_options',
+            'get_default_option','get_shop_name','ensure_single_select_defaults','serialize_drink_options',
+            'create_member_order','save_and_sync','sync_github_backup','current_backup_result','show_save_feedback'],
+            st=self.ui,backup_guard=self.guard,pd=pd,html=__import__('html'),OrderConflict=OrderConflict,
+            github_is_configured=lambda:True,github_get_backup=self.remote.get,github_put_backup=self.remote.put,
+            taiwan_now=lambda:SimpleNamespace(strftime=lambda _:NOW))
+        self.env['ensure_single_select_defaults']()
+        self.assertTrue(self.guard.transfer(True,self.remote.get,self.remote.put))
+        self.ui.session_state['member_token']={'member_id':1,'name':'測試甲',
+            'generation':self.guard.member_snapshot()['generation']}
+        self.before=self.snapshot(); self.calls=(self.remote.get_calls,self.remote.put_calls)
+
+    def render(self):
+        self.env['render_order_entry']()
+
+    def test_price_sequences_keep_values_without_writes_or_sync(self):
+        for key in ('m_price','d_price'):
+            for count in (1,5,10,20):
+                start=self.ui.session_state[key]
+                for _ in range(count):
+                    self.ui.session_state[key]+=5; self.render()
+                self.assertEqual(self.ui.session_state[key],start+count*5)
+        self.assertEqual(self.snapshot(),self.before)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual((self.remote.get_calls,self.remote.put_calls),self.calls)
+        self.assertEqual(self.scopes,[])
+
+    def test_create_both_categories_uses_last_price_quantity_and_custom_once(self):
+        for category,label,prefix,custom in [('主餐','＋ 加入主餐','m','Fake meal custom'),
+                                             ('飲料','＋ 加入飲料','d','L/無糖/去冰, Fake drink custom')]:
+            self.ui.session_state.update({prefix+'_price':135,prefix+'_qty':3,
+                prefix+'_custom_manual':'Fake meal custom' if prefix=='m' else 'Fake drink custom'})
+            self.ui.session_state.update(m_size='無',m_spicy='無',d_size='L',d_sugar='無糖',d_ice='去冰')
+            self.ui.clicked={label}; puts=self.remote.put_calls
+            with self.assertRaises(EntryRerun): self.render()
+            row=self.snapshot()['orders'][-1]
+            self.assertEqual((row['category'],row['price'],row['unit_price'],row['quantity'],row['custom']),
+                             (category,405,135,3,custom))
+            self.assertEqual(self.remote.put_calls,puts+1)
+            self.assertEqual(self.guard.status()['kind'],'success')
+            self.ui.clicked.clear(); self.render()
+            self.assertEqual(self.remote.put_calls,puts+1)
+            self.assertEqual(self.scopes[-1],'app')
+
+    def test_custom_dialog_open_intents_escape_to_app_without_writes(self):
+        original=self.ui.button
+        for key,prefix in [('btn_m_custom','m_custom'),('btn_d_custom','d_custom')]:
+            self.ui.button=lambda label,**kw:kw.get('key')==key
+            with self.assertRaises(EntryRerun):self.render()
+            self.assertEqual(self.ui.session_state.pop('_entry_custom_request'),prefix)
+        self.ui.button=original
+        self.assertEqual(self.snapshot(),self.before)
+        self.assertEqual((self.remote.get_calls,self.remote.put_calls),self.calls)
+        self.assertEqual(self.scopes,['app','app'])
+
+    def test_invalid_member_still_blocks_creation_and_sync(self):
+        self.ui.session_state.pop('member_token'); self.ui.clicked={'＋ 加入主餐'}
+        self.render()
+        self.assertTrue(self.ui.errors); self.assertEqual(self.snapshot(),self.before)
+        self.assertEqual((self.remote.get_calls,self.remote.put_calls),self.calls)
+
+    def test_entry_fragment_boundary_and_original_refresh_intervals(self):
+        tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
+        functions={n.name:n for n in tree.body if isinstance(n,ast.FunctionDef)}
+        entry=functions['render_order_entry']
+        self.assertEqual(ast.unparse(entry.decorator_list[0]),'st.fragment')
+        for key in ('m_price','d_price'):
+            call=next(n for n in ast.walk(entry) if isinstance(n,ast.Call)
+                and any(k.arg=='key' and isinstance(k.value,ast.Constant) and k.value.value==key for k in n.keywords))
+            self.assertEqual(next(k.value.value for k in call.keywords if k.arg=='step'),5)
+        names={n.func.id for n in ast.walk(entry) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)}
+        self.assertFalse(names.intersection({'render_stats_section','render_payment_section','render_my_orders','init_db','ensure_single_select_defaults'}))
+        timed={n.name:ast.literal_eval(n.decorator_list[0].keywords[0].value)
+            for n in functions.values() if n.decorator_list and isinstance(n.decorator_list[0],ast.Call)
+            and any(k.arg=='run_every' for k in n.decorator_list[0].keywords)}
+        self.assertEqual(timed,{'render_stats_section':'10s','render_payment_section':'10s'})
+        self.assertFalse(functions['render_my_orders'].decorator_list)
+
+    def test_repeated_refresh_reads_preserve_data_status_and_remote_calls(self):
+        env=load_app_functions(['render_stats_section','render_payment_section','_pay_logic_grouped',
+            'get_orders_df','get_current_shop_names','remember_order_token'],**self.env,
+            ORDER_COLUMNS=list(ORDER_FIELDS),taiwan_now_str=lambda:NOW)
+        for _ in range(5):
+            env['render_stats_section']();env['render_payment_section']();self.render()
+        self.assertEqual(self.snapshot(),self.before)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual((self.remote.get_calls,self.remote.put_calls),self.calls)
+
+        __import__('gc').collect()
+
+    def test_refresh_during_slow_sync_preserves_data_and_does_not_sync_again(self):
+        import time
+        started=threading.Event(); results=[]
+        def slow_get():
+            started.set();time.sleep(.15);return self.remote.get()
+        def synchronize():results.append(self.guard.transfer(True,slow_get,self.remote.put))
+        env=load_app_functions(['render_payment_section','_pay_logic_grouped','get_current_shop_names',
+            'remember_order_token'],**self.env,ORDER_COLUMNS=list(ORDER_FIELDS),taiwan_now_str=lambda:NOW)
+        worker=threading.Thread(target=synchronize);worker.start()
+        try:
+            self.assertTrue(started.wait(3))
+            begin=time.perf_counter();env['render_payment_section']()
+            elapsed=(time.perf_counter()-begin)*1000
+        finally:worker.join(5)
+        self.assertFalse(worker.is_alive());self.assertEqual(results,[True])
+        self.assertEqual(self.snapshot(),self.before)
+        self.assertEqual(self.guard.status()['kind'],'success')
+        self.assertEqual((self.remote.get_calls,self.remote.put_calls),(self.calls[0]+1,self.calls[1]+1))
+        print('FAKE REFRESH DURING SYNC:',round(elapsed,2),'ms; one GET/PUT from sync only')
+        __import__('gc').collect()
+
+
+class EntryFragmentAppTests(IsolatedTest):
+    """Real widget registration and dialog state; AppTest is not a timed browser dispatcher."""
+    def run_app(self,app):
+        # AppTest's ButtonGroup expects a list; production single-select pills
+        # return a scalar. Supply the equivalent browser selection explicitly.
+        for group in app.get('button_group'):
+            value=app.session_state[group.key]
+            group.set_value([value] if isinstance(value,str) else ([] if value is None else value))
+        app.run()
+        return app
+
+    def app(self):
+        self.remote=self.ready()
+        ui=FakeUI()
+        env=load_app_functions(['ensure_single_select_defaults','db_connect'],backup_guard=self.guard,st=ui)
+        env['ensure_single_select_defaults']()
+        self.guard.transfer(True,self.remote.get,self.remote.put)
+        import tempfile
+        previous=tempfile.tempdir; tempfile.tempdir=str(self.db.parent)
+        try:
+            from streamlit.testing.v1 import AppTest
+        finally: tempfile.tempdir=previous
+        names=['render_order_entry','get_db','db_connect','get_options','get_default_option','get_shop_name',
+            'serialize_drink_options','create_member_order','save_and_sync','sync_github_backup',
+            'current_backup_result','show_save_feedback','open_drink_custom_dialog','custom_dialog']
+        script="""import streamlit as st
+import pandas as pd
+import sqlite3,html,time
+from types import SimpleNamespace
+from backup_safety import BackupGuard,OrderConflict
+from test_backup_safety import load_app_functions,FakeRemote,NOW
+G=BackupGuard(DB,lambda:NOW)
+if 'remote' not in st.session_state:
+ st.session_state['remote']=FakeRemote(G.export())
+ st.session_state['remote'].sha=G.load_state()['remote_sha']
+remote=st.session_state['remote']
+member=G.member_snapshot()
+st.session_state.setdefault('member_token',{'member_id':1,'name':'測試甲','generation':member['generation']})
+for key,value in dict(m_name='Fake meal',d_name='Fake drink',m_custom_tags=[],m_custom_manual='',d_custom_tags=[],d_custom_manual='').items():st.session_state.setdefault(key,value)
+env=load_app_functions(NAMES,st=st,pd=pd,html=html,backup_guard=G,OrderConflict=OrderConflict,
+ github_is_configured=lambda:True,github_get_backup=remote.get,github_put_backup=remote.put,
+ taiwan_now=lambda:SimpleNamespace(strftime=lambda _:NOW))
+env['render_order_entry']()
+request=st.session_state.pop('_entry_custom_request',None)
+if request=='m_custom':env['custom_dialog']('m_custom',env['get_options']('tags'))
+elif request=='d_custom':env['open_drink_custom_dialog'](env['get_options']('drink_tags'))
+"""
+        path=self.db.parent/'fake_entry_only.py'
+        path.write_text('DB='+repr(str(self.db))+'\nNAMES='+repr(names)+'\n'+script,encoding='utf-8')
+        app=AppTest.from_file(str(path));app.secrets={'fake_only':True};app.run()
+        self.assertEqual(len(app.exception),0);return app
+
+    def test_main_and_drink_prices_survive_dialog_open_and_committed_state_refresh(self):
+        app=self.app()
+        app.number_input(key='m_price').set_value(135);self.run_app(app)
+        app.number_input(key='d_price').set_value(65);self.run_app(app)
+        app.button(key='btn_d_custom').click();self.run_app(app)
+        self.assertEqual(len(app.exception),0);self.assertEqual(len(app.get('dialog')),1)
+        self.assertEqual(app.text_input(key='d_custom_manual_widget').value,'')
+        # AppTest dispatches a full run rather than a dialog fragment event.
+        # Existing DrinkDialogStateTests cover draft completion separately.
+        app.session_state['d_custom_manual']='Fake extra'
+        self.run_app(app)
+        self.assertEqual(len(app.exception),0)
+        self.assertEqual(app.number_input(key='m_price').value,135)
+        self.assertEqual(app.number_input(key='d_price').value,65)
+        self.assertEqual(app.session_state['d_custom_manual'],'Fake extra')
+        self.assertEqual(app.session_state['remote'].put_calls,0)
+
+    def test_latest_widget_price_and_quantity_create_and_sync_both_categories(self):
+        app=self.app()
+        for prefix,label in [('m','＋ 加入主餐'),('d','＋ 加入飲料')]:
+            app.number_input(key=prefix+'_price').set_value(125);self.run_app(app)
+            app.number_input(key=prefix+'_qty').set_value(2);self.run_app(app)
+            before=app.session_state['remote'].put_calls
+            next(b for b in app.button if b.label==label).click();self.run_app(app)
+            self.assertEqual(len(app.exception),0)
+            row=self.snapshot()['orders'][-1]
+            self.assertEqual((row['unit_price'],row['quantity'],row['price']),(125,2,250))
+            self.assertEqual(app.session_state['remote'].put_calls,before+1)
+            self.run_app(app);self.assertEqual(app.session_state['remote'].put_calls,before+1)
+
+    def test_clear_custom_does_not_reset_price_or_sync(self):
+        app=self.app();app.number_input(key='d_price').set_value(75);self.run_app(app)
+        app.session_state['d_custom_manual']='Fake committed';self.run_app(app)
+        app.button(key='clr_d_custom').click();self.run_app(app)
+        self.assertEqual(len(app.exception),0)
+        self.assertEqual(app.number_input(key='d_price').value,75)
+        self.assertEqual(app.session_state['d_custom_manual'],'')
+        self.assertEqual(app.session_state['remote'].put_calls,0)
