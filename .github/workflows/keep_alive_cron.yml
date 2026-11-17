@@ -23,4 +23,6 @@ jobs:
           pip install selenium
 
       - name: 執行喚醒腳本
+        env:
+          APP_URL: ${{ vars.APP_URL }}
         run: python keep_alive.py
