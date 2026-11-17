@@ -267,6 +267,19 @@ def github_request(method,url,token,payload=None):
         return json.loads(response.read().decode("utf-8"))
 
 
+def github_get_json(url,token,attempts=3):
+    # GET is idempotent, so short transient failures (timeout, network, 5xx,
+    # rate limit) are retried. PUT is never retried here; BackupGuard reconciles.
+    for attempt in range(attempts):
+        try:
+            return github_request("GET",url,token)
+        except urllib.error.HTTPError as e:
+            if not (e.code>=500 or e.code in (408,429)) or attempt==attempts-1: raise
+        except (urllib.error.URLError,TimeoutError,ConnectionError,OSError):
+            if attempt==attempts-1: raise
+        time.sleep(0.5*(attempt+1))
+
+
 def test_github_encryption_key():
     *_,key=get_github_settings()
     if not key: return False,"尚未設定 encryption_key。"
@@ -307,7 +320,7 @@ def github_get_backup():
     ref=urllib.parse.quote(branch,safe='')
     url=f"{base}/contents/{urllib.parse.quote(path,safe='/')}?ref={ref}"
     try:
-        result=github_request("GET",url,token)
+        result=github_get_json(url,token)
     except urllib.error.HTTPError as e:
         if e.code!=404:
             raise BackupError(f"GitHub 備份讀取失敗（HTTP {e.code}）。") from e

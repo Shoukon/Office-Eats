@@ -55,7 +55,7 @@ Shoukon/Office-Eats、main、order.py。程式已支援獨立分支或另一個 
 | pending、未決 attempt 為空 | 用「唯讀核對 GitHub 備份」確認；失敗保留警告。若確知只有本機新增且基準未變，再手動同步 | 不因警告而清空資料或刪 journal |
 | 網路／權限失效 | 先限制新寫入並由管理員匯出本機 JSON 到受保護位置；修復連線／權限後核對 | 不把重新啟動當修復，不在對話貼 Token |
 | 遠端版本衝突 | 暫停所有寫入者，分別保留本機與遠端可驗證快照，人工比對差異 | 不強制 PUT、不採用最新 SHA 後盲目上傳 |
-| PUT timeout／回應遺失、未決 attempt | 原程式會阻擋後續修改；手動同步入口只先核對原 attempt，不盲目重送。稍後再核對 | 不刪 journal、不重新匯入舊快照；無法確認則交由負責人處理 |
+| PUT timeout／回應遺失、未決 attempt | 程式先 GET 核對：遠端等於目標則確認成功；遠端 SHA 仍是原基準（PUT 未生效）則自動解除暫停並保留本機資料，下次同步以原 SHA 條件式上傳（遲到的舊請求只會得到 409，內容相同則直接採用新 SHA）。遠端變成其他內容或讀不到時才維持暫停，按「立即同步」重試核對 | 不刪 journal、不重新匯入舊快照；遠端被他人改動時不強制覆寫，交由負責人處理 |
 | 首次接管不一致／狀態檔損毀 | 保留原始資料與狀態，停止寫入，人工判斷來源 | 不把它當首次空資料庫，不任意重設 baseline |
 
 ### 復原順序
@@ -83,3 +83,18 @@ Shoukon/Office-Eats、main、order.py。程式已支援獨立分支或另一個 
 先量測並發量、保留要求及復原目標，再評估集中式 PostgreSQL 等服務：
 需設計 member/order 關聯、交易隔離、身分版本、備份與還原、憑證及監控、
 資料遷移與回退測試，另有維運費用。沒有這些需求證據時，維持目前單檔架構。
+
+
+## 備份分支 backup-data 切換步驟（選用，建議）
+
+目的：備份 commit 不再進 main，避免每次備份觸發 Streamlit Cloud 重新部署。
+程式不需修改，只改 Secrets 的 branch。分支內的 order_data.json 與 main 是同一個 blob，
+所以本機 .safety.json 記錄的 SHA 仍然有效，不需重新接管。
+
+1. 確認狀態為「本機資料與 GitHub 備份已確認一致」（管理員面板綠色）。
+2. 在 GitHub 由 main 建立分支 backup-data（含目前 order_data.json）。
+3. Streamlit Cloud → Settings → Secrets，把 `[github]` 的 `branch = "backup-data"`，儲存。
+4. 重新載入 app，面板的儲存位置應顯示 `（backup-data）`；做一筆測試訂單並按「立即同步」，
+   到 GitHub 確認 commit 出現在 backup-data 而不是 main。
+5. 回復：把 branch 改回 main 即可（main 上的舊檔保留，不要刪）。
+   若分支上已有較新資料，不可直接切回 main，需先把分支檔案同步回 main 或手動核對。

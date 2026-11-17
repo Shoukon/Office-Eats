@@ -83,6 +83,9 @@ class FakeRemote:
             raise RemoteRejected("simulated PUT conflict")
         if self.mode == "timeout_before":
             raise TimeoutError("simulated unconfirmed PUT")
+        if self.mode == "timeout_before_get_fail":
+            self.fail_get = True  # request never landed AND GitHub is unreachable afterwards
+            raise TimeoutError("simulated unconfirmed PUT")
         self.data = copy.deepcopy(data)
         self.sha = f"fake-sha-{self.put_calls}"
         if self.mode == "lost_response":
@@ -338,8 +341,10 @@ class SyncTests(IsolatedTest):
         self.assertEqual(remote.put_calls, 0)
 
     def test_uncertain_previous_transfer_cannot_claim_a_different_new_import_succeeded(self):
-        remote = self.ready(); remote.mode = "timeout_before"
+        # Remote changed to something that is neither baseline nor target: stay blocked.
+        remote = self.ready(); remote.mode = "lost_response_get_fail"
         self.assertFalse(self.guard.transfer(True, remote.get, remote.put, imported=fixture("first")))
+        remote.fail_get = False; remote.sha = "external-newer-sha"; remote.data = fixture("external")
         with self.assertRaises(SafetyBlocked):
             self.guard.transfer(True, remote.get, remote.put, imported=fixture("second"))
         self.assertEqual(self.snapshot()["orders"][0]["item_name"], "測試便當")
@@ -415,8 +420,8 @@ class SyncTests(IsolatedTest):
                 self.assertEqual(content_digest(self.snapshot()), content_digest(remote.data))
                 self.assertIsNone(self.guard.load_state()["attempt"])
 
-    def test_unconfirmed_put_retains_journal_and_blocks_writes_without_resend(self):
-        remote = self.ready(); remote.mode = "timeout_before"
+    def test_unconfirmed_put_blocks_while_remote_unreadable_without_resend(self):
+        remote = self.ready(); remote.mode = "timeout_before_get_fail"
         before = self.snapshot()
         self.assertFalse(self.guard.transfer(True, remote.get, remote.put, imported=fixture("new-import")))
         self.assertEqual(self.snapshot(), before)
@@ -425,6 +430,58 @@ class SyncTests(IsolatedTest):
         self.assertFalse(self.guard.transfer(True, remote.get, remote.put))
         self.assertEqual(remote.put_calls, 1)
         self.assertEqual(self.guard.startup(True, remote.get), "uncertain")
+        self.assertEqual(remote.put_calls, 1)
+
+    def test_put_that_never_landed_releases_journal_instead_of_blocking_forever(self):
+        # Regression: a transient PUT timeout used to leave "write result unknown"
+        # permanently, even after GitHub was reachable and still held the old SHA.
+        remote = self.ready(); remote.mode = "timeout_before"
+        self.write_item("local-change")
+        self.assertFalse(self.guard.transfer(True, remote.get, remote.put))      # immediate reconcile releases
+        self.assertIsNone(self.guard.load_state()["attempt"])
+        self.assertEqual(self.guard.status()["kind"], "pending")
+        self.write_item("still-writable")                                           # writes are not blocked
+        remote.mode = "normal"
+        self.assertTrue(self.guard.transfer(True, remote.get, remote.put))          # next sync uploads everything
+        self.assertEqual(remote.data["orders"][0]["item_name"], "still-writable")
+        self.assertEqual(self.guard.status()["kind"], "success")
+
+    def test_stuck_journal_from_before_the_fix_is_released_by_retry(self):
+        remote = self.ready(); remote.mode = "timeout_before_get_fail"
+        self.write_item("local-change")
+        self.assertFalse(self.guard.transfer(True, remote.get, remote.put))
+        self.assertIsNotNone(self.guard.load_state()["attempt"])                    # blocked while GET fails
+        remote.fail_get = False; remote.mode = "normal"
+        self.assertTrue(self.guard.transfer(True, remote.get, remote.put))          # "立即同步" now recovers
+        self.assertIsNone(self.guard.load_state()["attempt"])
+        self.assertEqual(content_digest(self.snapshot()), content_digest(remote.data))
+
+    def test_failed_import_that_never_landed_is_not_applied_and_unblocks(self):
+        remote = self.ready(); remote.mode = "timeout_before"
+        before = self.snapshot()
+        self.assertFalse(self.guard.transfer(True, remote.get, remote.put, imported=fixture("new-import")))
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("匯入未執行", self.guard.status()["message"])
+        self.write_item("writable-again")
+
+    def test_late_landing_put_with_same_content_is_adopted_not_blocked(self):
+        remote = self.ready(); remote.mode = "timeout_before"
+        self.write_item("local-change")
+        self.assertFalse(self.guard.transfer(True, remote.get, remote.put))        # released
+        # The "lost" request finally reaches GitHub: same content, new blob SHA.
+        remote.data = self.snapshot(); remote.sha = "late-landed-sha"
+        remote.mode = "normal"
+        self.assertTrue(self.guard.transfer(True, remote.get, remote.put))
+        self.assertEqual(remote.put_calls, 1)                                       # no second PUT
+        self.assertEqual(self.guard.load_state()["remote_sha"], "late-landed-sha")
+
+    def test_remote_changed_by_someone_else_still_blocks_after_release(self):
+        remote = self.ready(); remote.mode = "timeout_before"
+        self.write_item("local-change")
+        self.assertFalse(self.guard.transfer(True, remote.get, remote.put))
+        remote.data = fixture("external-data"); remote.sha = "external-sha"; remote.mode = "normal"
+        self.assertFalse(self.guard.transfer(True, remote.get, remote.put))
+        self.assertEqual(remote.data["orders"][0]["item_name"], "external-data")    # never overwritten
         self.assertEqual(remote.put_calls, 1)
 
     def test_uncertain_write_can_be_reconciled_after_restart(self):
@@ -590,8 +647,8 @@ class GitHubAdapterTests(IsolatedTest):
     def client(self, request):
         from cryptography.fernet import Fernet, InvalidToken
         test_key = Fernet.generate_key().decode("ascii")
-        return load_app_functions(["github_get_backup", "github_put_backup", "encrypt_github_backup", "decrypt_github_backup"],
-                                  Fernet=Fernet, InvalidToken=InvalidToken,
+        return load_app_functions(["github_get_backup", "github_get_json", "github_put_backup", "encrypt_github_backup", "decrypt_github_backup"],
+                                  Fernet=Fernet, time=SimpleNamespace(sleep=lambda seconds: None), InvalidToken=InvalidToken,
                                   get_github_settings=lambda: ("FAKE_TEST_TOKEN", "test-owner", "test-repo", "test-branch", "test-data.enc", test_key),
                                   github_request=request, taiwan_now_str=lambda: NOW)
 
@@ -624,6 +681,25 @@ class GitHubAdapterTests(IsolatedTest):
             return {"name": "test-repo"}
         with self.assertRaises(BackupError):
             self.client(request)["github_get_backup"]()
+
+    def test_get_retries_transient_failures_but_not_permission_errors(self):
+        from cryptography.fernet import Fernet
+        calls = {"n": 0}
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise self.http_error(502)
+            raise self.http_error(403)
+        with self.assertRaises(BackupError):
+            self.client(flaky)["github_get_backup"]()
+        self.assertEqual(calls["n"], 3)        # two 502 retried, then 403 surfaced
+        calls["n"] = 0
+        def denied(*args, **kwargs):
+            calls["n"] += 1
+            raise self.http_error(401)
+        with self.assertRaises(BackupError):
+            self.client(denied)["github_get_backup"]()
+        self.assertEqual(calls["n"], 1)        # auth errors are not retried
 
     def test_get_timeout_and_empty_or_damaged_content_are_errors(self):
         def timeout(*args, **kwargs):

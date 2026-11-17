@@ -568,10 +568,27 @@ class BackupGuard:
                 self._success(state, snapshot)
                 self.save_state(state)
                 return "reconciled"
+            if sha == state.get("remote_sha"):
+                # GitHub still holds the exact blob our baseline was built on, so
+                # the attempted PUT is not visible. Dropping the journal is safe:
+                # the next PUT is conditional on this SHA, so if the lost request
+                # lands late GitHub answers 409 and nothing is overwritten (a late
+                # landing whose content equals local is then adopted by transfer()).
+                # Local rows were never committed for an import, and a sync only
+                # ever uploads rows that are already committed locally.
+                if attempt["kind"] == "import":
+                    message = "GitHub 沒有收到匯入內容，匯入未執行，原資料已保留；請重新匯入。"
+                else:
+                    message = "上次 GitHub 寫入未生效，已自動解除暫停；本機資料已保留，尚未備份，請再同步一次。"
+                state["attempt"] = None
+                state.pop("pending_check", None)
+                state["sync"] = {"kind": "pending", "message": message}
+                self.save_state(state)
+                return "released"
         except Exception:
             conn.rollback()
-        # Seeing the old SHA immediately after timeout doesn't prove the PUT
-        # cannot finish later. Retain the journal and NEVER resend blindly.
+        # Remote changed to something that is neither our baseline nor our target
+        # (or could not be read). Retain the journal and NEVER resend blindly.
         state["sync"] = {"kind": "error", "message": "GitHub 寫入結果仍不明；已保留原資料並暫停寫入，請重試核對。"}
         self.save_state(state)
         return "uncertain"
@@ -590,7 +607,9 @@ class BackupGuard:
                 if imported is not None:
                     raise SafetyBlocked("先核對尚未確認的備份結果；這次匯入尚未執行，請重新整理後再確認。")
                 result = self._reconcile(conn, state, remote_get)
-                return result == "reconciled"
+                if result != "released":
+                    return result == "reconciled"
+                state = self.load_state()  # journal released: carry on with a normal sync
             if not configured:
                 state["sync"] = {"kind": "error", "message": "未設定 GitHub；匯入未執行／本機變更尚未備份。"}
                 self.save_state(state)
@@ -610,6 +629,13 @@ class BackupGuard:
                 if not state.get("baseline_known") and remote is not None and content_digest(remote) != content_digest(before):
                     raise RemoteRejected("尚未建立可信同步基準，且本機與遠端不同；禁止自動覆寫，請先人工核對。")
                 if state.get("baseline_known") and sha != state.get("remote_sha"):
+                    if imported is None and remote is not None and content_digest(remote) == content_digest(before):
+                        # A delayed earlier PUT landed: same content, new blob SHA.
+                        # Nothing can be lost, so adopt the SHA instead of blocking.
+                        state["remote_sha"] = sha
+                        self._success(state, before)
+                        self.save_state(state)
+                        return True
                     raise RemoteRejected("遠端備份版本已改變，請先核對；未覆寫遠端。")
                 if imported is not None:
                     self._replace_snapshot(conn, imported, state)
