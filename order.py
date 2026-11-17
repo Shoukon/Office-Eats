@@ -1121,8 +1121,7 @@ def clear_orders_dialog(order_token):
 
 
 with st.sidebar:
-    st.header("⚙️ 點餐管理")
-    st.divider(); st.subheader("🗑️ 資料管理")
+    st.subheader("🗑️ 資料管理")
     clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
     if st.button("🗑️ 清空全部訂單",use_container_width=True,
                  on_click=remember_order_token,args=("clear_order_token",clear_token)):
