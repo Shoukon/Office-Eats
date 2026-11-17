@@ -2271,41 +2271,40 @@ if 'd_custom_manual' not in st.session_state: st.session_state['d_custom_manual'
 with tab2: render_stats_section()
 with tab3: render_payment_section()
 
+@st.dialog("✏️ 修改今日店家")
+def edit_shops_dialog():
+    # 用對話框而不是 popover：popover 無法由程式關閉，儲存後會一直停在畫面上；
+    # 對話框在儲存成功後 st.rerun() 就會關閉。失敗時保持開啟並顯示錯誤。
+    _shops = get_current_shop_names()
+    _new_main = st.text_input("主餐店家", value=_shops["main"], key="tab_shop_main_input").strip()
+    _new_drink = st.text_input("飲料店家", value=_shops["drink"], key="tab_shop_drink_input").strip()
+    if st.button("💾 儲存今日店家", key="tab_save_shop_names", use_container_width=True, type="primary"):
+        _ok, _msg = save_shop_names(_new_main, _new_drink)
+        if not _ok:
+            st.error(_msg)
+        else:
+            if not save_and_sync():
+                st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
+            st.rerun()
+
+
 with tab1:
     if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
 
-    # 今日店家摘要：手機版側邊欄預設收起，輪到決定店家的人在這裡就能修改。
-    _shops = get_current_shop_names()
-    _main_label = html.escape(_shops["main"]) if _shops["main"].strip() else "尚未設定"
-    _drink_label = html.escape(_shops["drink"]) if _shops["drink"].strip() else "尚未設定"
-    # 兩列對齊：左邊顯示店家（主餐／飲料各一行），右邊是兩個按鈕。
-    # 固定欄寬，店名長短不會讓按鈕位置移動。
-    row_main, row_main_btn = st.columns([3, 2], vertical_alignment="center")
-    row_drink, row_drink_btn = st.columns([3, 2], vertical_alignment="center")
-    with row_main:
-        st.markdown(f"🍱 主餐：**{_main_label}**")
-    with row_drink:
-        st.markdown(f"🥤 飲料：**{_drink_label}**")
-    with row_main_btn:
-        with st.popover("✏️ 修改今日店家", use_container_width=True):
-            _new_main = st.text_input("主餐店家", value=_shops["main"], key="tab_shop_main_input").strip()
-            _new_drink = st.text_input("飲料店家", value=_shops["drink"], key="tab_shop_drink_input").strip()
-            if st.button("💾 儲存今日店家", key="tab_save_shop_names", use_container_width=True, type="primary"):
-                _ok, _msg = save_shop_names(_new_main, _new_drink)
-                if not _ok:
-                    st.error(_msg)
-                else:
-                    if not save_and_sync():
-                        st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
-                    st.rerun()
-    # 清空全部訂單：和「修改今日店家」放在一起，不必選姓名也看得到（所有人可用，
-    # 輪流負責的人不一定是管理員）。仍需經過確認視窗，且會檢查訂單資料版本。
-    with row_drink_btn:
+    # 店名已顯示在下方的主餐／飲料標題條，這裡只放兩個按鈕，節省版面。
+    # 手機側邊欄預設收起，輪到決定店家的人在這裡就能修改；清空訂單不必選姓名也看得到
+    # （所有人可用，輪流負責的人不一定是管理員），仍需確認視窗並檢查訂單資料版本。
+    c_edit_shops, c_clear = st.columns(2)
+    with c_edit_shops:
+        edit_shops_clicked=st.button("✏️ 修改今日店家",use_container_width=True,key="open_edit_shops")
+    with c_clear:
         clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
         clear_clicked=st.button("🗑️ 清空全部訂單",use_container_width=True,
                                 help="清除目前所有人的訂單（會再要求確認）。",
                                 on_click=remember_order_token,args=("clear_order_token",clear_token))
-    if clear_clicked:
+    if edit_shops_clicked:
+        edit_shops_dialog()
+    elif clear_clicked:
         clear_orders_dialog(st.session_state.pop("clear_order_token",None))
 
     with st.container():
