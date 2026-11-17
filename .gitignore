@@ -10,6 +10,10 @@ streamlit Secrets.txt
 *.db-*
 *.sqlite
 *.sqlite3
+# order_data.json is the ENCRYPTED backup the app writes through the GitHub API.
+# It is intentionally tracked in the repository even though it is listed here:
+# .gitignore only affects untracked files. Never commit a plaintext export or
+# lunch.db. Do not delete the tracked file when switching the backup branch.
 order_data.json
 *.safety.json
 *.safety.json.*
