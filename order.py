@@ -2278,7 +2278,7 @@ with tab1:
     _shops = get_current_shop_names()
     _main_label = html.escape(_shops["main"]) if _shops["main"].strip() else "尚未設定"
     _drink_label = html.escape(_shops["drink"]) if _shops["drink"].strip() else "尚未設定"
-    c_shop, c_shop_edit = st.columns([3, 1.5], vertical_alignment="center")
+    c_shop, c_shop_edit, c_clear = st.columns([3, 1.5, 1.5], vertical_alignment="center")
     with c_shop:
         st.markdown(f"🍱 主餐：**{_main_label}**　🥤 飲料：**{_drink_label}**")
     with c_shop_edit:
@@ -2293,6 +2293,15 @@ with tab1:
                     if not save_and_sync():
                         st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
                     st.rerun()
+    # 清空全部訂單：和「修改今日店家」放在一起，不必選姓名也看得到（所有人可用，
+    # 輪流負責的人不一定是管理員）。仍需經過確認視窗，且會檢查訂單資料版本。
+    with c_clear:
+        clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
+        clear_clicked=st.button("🗑️ 清空全部訂單",use_container_width=True,
+                                help="清除目前所有人的訂單（會再要求確認）。",
+                                on_click=remember_order_token,args=("clear_order_token",clear_token))
+    if clear_clicked:
+        clear_orders_dialog(st.session_state.pop("clear_order_token",None))
 
     with st.container():
         st.markdown('<h5>👤 請選擇您的姓名</h5>', unsafe_allow_html=True)
@@ -2337,12 +2346,3 @@ with tab1:
         custom_dialog("m_custom", get_options("tags"))
     elif entry_custom_request == "d_custom":
         open_drink_custom_dialog(get_options("drink_tags"))
-
-    # 清空全部訂單：放在點餐區最下方（所有人可用，輪流負責的人不一定是管理員）。
-    # 仍需經過確認視窗，且會檢查訂單資料版本，舊畫面無法誤清。
-    st.divider()
-    clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
-    if st.button("🗑️ 清空全部訂單",use_container_width=True,
-                 help="清除目前所有人的訂單（會再要求確認）。",
-                 on_click=remember_order_token,args=("clear_order_token",clear_token)):
-        clear_orders_dialog(st.session_state.pop("clear_order_token",None))
