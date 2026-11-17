@@ -15,8 +15,10 @@ Cloud 日誌曾顯示平台將 pyarrow 26.0.0 改為 24.0.0。Windows 套件與 
 `requirements-test.txt` 鎖定已驗證的直接測試依賴；
 `requirements-cloud-check.txt` 是依 Cloud 觀察值設定的 CI 相容性目標，
 不是已通過本機驗證的宣稱。兩者都不是完整的間接依賴／hash lock。
-正式 `requirements.txt` 本批不變：不得在未驗證前把 Cloud 降成 Windows 測試版本，
-也不因版本較新就升級。待兩個 CI 環境及必要 UI 驗收通過後，另案決定正式鎖版。
+正式 `requirements.txt` 已鎖定為 Cloud 觀察值（streamlit 1.66.0、pandas 3.0.6、
+cryptography 50.0.2、tzdata 2026.5），與 `requirements-cloud-check.txt` 相同；
+兩個 CI 環境及 Windows 本機（302 個測試）皆已通過。更新版本時兩個檔案一起改，
+先讓 CI 通過再部署。這不是間接依賴／hash lock。
 
 以下命令僅用於無正式 Secrets／資料的開發副本；現有測試環境可直接使用，無需重裝：
 
@@ -29,7 +31,7 @@ python -m pip install -r requirements-test.txt
 python -m pip check
 # POSIX: export PYTHONPATH=tests:.
 # PowerShell: $env:PYTHONPATH='tests;.'
-python -B -m unittest -q test_backup_safety test_final_acceptance test_order_identity test_member_order_identity test_member_rename_acceptance test_member_rename_concurrency
+python -B -m unittest -q test_backup_safety test_final_acceptance test_order_identity test_member_order_identity test_member_rename_acceptance test_member_rename_concurrency test_admin_login
 ```
 
 Windows 本機可用 `tzdata` 補足 ZoneInfo；CI 為 Ubuntu，不能因此宣稱 Windows／Cloud 行為相同。
