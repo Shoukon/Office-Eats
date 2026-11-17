@@ -34,7 +34,7 @@ ORDER_COLUMNS = [
 # ==========================================
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
-VERSION = "v3.8.0"
+VERSION = "v3.9.0"
 st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
 
 custom_css = """
@@ -619,6 +619,29 @@ def get_shop_name(cat):
         (cat,)
     )
     return str(df.iloc[0]["shop_name"]).strip() if not df.empty else ""
+
+
+def save_shop_names(main_shop, drink_shop):
+    """Write both shop names in one guarded transaction; return (ok, message)."""
+    main_shop, drink_shop = str(main_shop).strip(), str(drink_shop).strip()
+    conn = None
+    try:
+        conn = db_connect(write=True)
+        for category, shop_name in (("main", main_shop), ("drink", drink_shop)):
+            conn.execute(
+                "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
+                "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
+                (category, shop_name))
+        saved = dict(conn.execute("SELECT category,shop_name FROM config_shop"))
+        if saved.get("main") != main_shop or saved.get("drink") != drink_shop:
+            raise RuntimeError("SQLite 店家資料寫入後驗證不一致。")
+        conn.commit()
+        return True, ""
+    except Exception as e:
+        if conn is not None: conn.rollback()
+        return False, f"⚠️ 今日店家儲存失敗：{e}"
+    finally:
+        if conn is not None: conn.close()
 
 
 def get_current_shop_names():
@@ -2078,7 +2101,7 @@ def render_order_entry():
 
     c_food, c_drink = st.columns(2)
     with c_food:
-        st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(str(current_main_shop))} (主餐)</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-header header-food"><div>🍱 {html.escape(str(current_main_shop)) if str(current_main_shop).strip() else "尚未設定店家"} (主餐)</div></div>', unsafe_allow_html=True)
         with st.container():
             m_name_raw = st.text_input("餐點名稱", placeholder="例如：肉圓、雞排飯", key="m_name")
             m_name = m_name_raw.strip()
@@ -2181,7 +2204,7 @@ def render_order_entry():
                 else: st.toast("⚠️ 請輸入餐點名稱")
 
     with c_drink:
-        st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(str(current_drink_shop))} (飲料)</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-header header-drink"><div>🥤 {html.escape(str(current_drink_shop)) if str(current_drink_shop).strip() else "尚未設定店家"} (飲料)</div></div>', unsafe_allow_html=True)
         with st.container():
             d_name_raw = st.text_input("飲料名稱", placeholder="例如：紅茶、青茶", key="d_name")
             d_name = d_name_raw.strip()
@@ -2286,6 +2309,26 @@ with tab3: render_payment_section()
 
 with tab1:
     if st.button("🔄 重新整理資料", type="secondary", use_container_width=True): st.rerun()
+
+    # 今日店家摘要：手機版側邊欄預設收起，輪到決定店家的人在這裡就能修改。
+    _shops = get_current_shop_names()
+    _main_label = html.escape(_shops["main"]) if _shops["main"].strip() else "尚未設定"
+    _drink_label = html.escape(_shops["drink"]) if _shops["drink"].strip() else "尚未設定"
+    c_shop, c_shop_edit = st.columns([3, 1.5], vertical_alignment="center")
+    with c_shop:
+        st.markdown(f"🍱 主餐：**{_main_label}**　🥤 飲料：**{_drink_label}**")
+    with c_shop_edit:
+        with st.popover("✏️ 修改今日店家", use_container_width=True):
+            _new_main = st.text_input("主餐店家", value=_shops["main"], key="tab_shop_main_input").strip()
+            _new_drink = st.text_input("飲料店家", value=_shops["drink"], key="tab_shop_drink_input").strip()
+            if st.button("💾 儲存今日店家", key="tab_save_shop_names", use_container_width=True, type="primary"):
+                _ok, _msg = save_shop_names(_new_main, _new_drink)
+                if not _ok:
+                    st.error(_msg)
+                else:
+                    if not save_and_sync():
+                        st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
+                    st.rerun()
 
     with st.container():
         st.markdown('<h5>👤 請選擇您的姓名</h5>', unsafe_allow_html=True)

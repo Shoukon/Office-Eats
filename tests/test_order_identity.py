@@ -1380,7 +1380,7 @@ for parent in ast.walk(tree):
         tree=ast.parse(SOURCE.read_text(encoding='utf-8-sig'))
         version=next(n.value.value for n in tree.body if isinstance(n,ast.Assign)
             and any(isinstance(t,ast.Name) and t.id=='VERSION' for t in n.targets))
-        self.assertEqual(version,'v3.8.0')
+        self.assertEqual(version,'v3.9.0')
         app=self.app(); self.open(app)
         confirm=next(b for b in app.button if b.label=='確認刪除')
         self.assertEqual(confirm.proto.type,'primary')
