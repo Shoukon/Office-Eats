@@ -2278,10 +2278,15 @@ with tab1:
     _shops = get_current_shop_names()
     _main_label = html.escape(_shops["main"]) if _shops["main"].strip() else "尚未設定"
     _drink_label = html.escape(_shops["drink"]) if _shops["drink"].strip() else "尚未設定"
-    c_shop, c_shop_edit, c_clear = st.columns([3, 1.5, 1.5], vertical_alignment="center")
-    with c_shop:
-        st.markdown(f"🍱 主餐：**{_main_label}**　🥤 飲料：**{_drink_label}**")
-    with c_shop_edit:
+    # 兩列對齊：左邊顯示店家（主餐／飲料各一行），右邊是兩個按鈕。
+    # 固定欄寬，店名長短不會讓按鈕位置移動。
+    row_main, row_main_btn = st.columns([3, 2], vertical_alignment="center")
+    row_drink, row_drink_btn = st.columns([3, 2], vertical_alignment="center")
+    with row_main:
+        st.markdown(f"🍱 主餐：**{_main_label}**")
+    with row_drink:
+        st.markdown(f"🥤 飲料：**{_drink_label}**")
+    with row_main_btn:
         with st.popover("✏️ 修改今日店家", use_container_width=True):
             _new_main = st.text_input("主餐店家", value=_shops["main"], key="tab_shop_main_input").strip()
             _new_drink = st.text_input("飲料店家", value=_shops["drink"], key="tab_shop_drink_input").strip()
@@ -2295,7 +2300,7 @@ with tab1:
                     st.rerun()
     # 清空全部訂單：和「修改今日店家」放在一起，不必選姓名也看得到（所有人可用，
     # 輪流負責的人不一定是管理員）。仍需經過確認視窗，且會檢查訂單資料版本。
-    with c_clear:
+    with row_drink_btn:
         clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
         clear_clicked=st.button("🗑️ 清空全部訂單",use_container_width=True,
                                 help="清除目前所有人的訂單（會再要求確認）。",
