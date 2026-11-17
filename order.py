@@ -35,7 +35,7 @@ ORDER_COLUMNS = [
 # 1. 頁面設定與 CSS (純淨無框線排版核心)
 # ==========================================
 VERSION = "v3.9.0"
-st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide")
+st.set_page_config(page_title=f"點餐哦各位～ {VERSION}", page_icon="🍱", layout="wide", initial_sidebar_state="collapsed")
 
 custom_css = """
 <style>
@@ -1121,16 +1121,8 @@ def clear_orders_dialog(order_token):
 
 
 with st.sidebar:
-    st.subheader("🗑️ 資料管理")
-    clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
-    if st.button("🗑️ 清空全部訂單",use_container_width=True,
-                 on_click=remember_order_token,args=("clear_order_token",clear_token)):
-        clear_orders_dialog(st.session_state.pop("clear_order_token",None))
-
-
-    # 管理員區塊預設收起；登入後自動展開。登入前後使用不同標題，
-    # 確保 expanded 設定在狀態切換時一定生效。
-    st.divider()
+    # 側邊欄只放管理員功能，預設收起；管理員區塊本身也預設收起，登入後自動展開。
+    # 登入前後使用不同標題，確保 expanded 設定在狀態切換時一定生效。
     _admin_in = bool(st.session_state.admin_logged_in)
     with st.expander("🔐 管理員功能" if _admin_in else "🔐 管理員登入", expanded=_admin_in):
         if not _admin_in:
@@ -2345,3 +2337,12 @@ with tab1:
         custom_dialog("m_custom", get_options("tags"))
     elif entry_custom_request == "d_custom":
         open_drink_custom_dialog(get_options("drink_tags"))
+
+    # 清空全部訂單：放在點餐區最下方（所有人可用，輪流負責的人不一定是管理員）。
+    # 仍需經過確認視窗，且會檢查訂單資料版本，舊畫面無法誤清。
+    st.divider()
+    clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
+    if st.button("🗑️ 清空全部訂單",use_container_width=True,
+                 help="清除目前所有人的訂單（會再要求確認）。",
+                 on_click=remember_order_token,args=("clear_order_token",clear_token)):
+        clear_orders_dialog(st.session_state.pop("clear_order_token",None))
