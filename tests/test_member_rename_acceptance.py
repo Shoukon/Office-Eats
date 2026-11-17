@@ -251,6 +251,7 @@ class MemberManagementBatchAcceptance(unittest.TestCase):
                 synced=[]
                 env=load_app_functions(['manage_members_dialog'],st=self.ui,
                     get_members=lambda:pd.DataFrame(self.before['members']),
+                    get_db=self.env['get_db'],
                     move_member=lambda *args:(False,'fake failure'),
                     delete_member=lambda *args:(False,'fake failure'),
                     add_member=lambda *args:(False,'fake failure'),
@@ -338,7 +339,8 @@ class MemberHistoryNoticeTests(unittest.TestCase):
         self.ui.caption=captions.append; self.ui.warning=warnings.append
         self.ui.session_state['confirm_delete_member_1']=True
         env=load_app_functions(['manage_members_dialog'],st=self.ui,
-            get_members=lambda:pd.DataFrame(self.before['members']))
+            get_members=lambda:pd.DataFrame(self.before['members']),
+            get_db=self.env['get_db'])
         env['manage_members_dialog']()
         self.assertTrue(any('重新新增同名' in text for text in captions))
         self.assertTrue(any('既有訂單會保留' in text for text in warnings))

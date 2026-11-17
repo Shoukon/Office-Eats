@@ -339,6 +339,7 @@ class FakeUI:
         self.buttons.append((label, kwargs))
         return label in self.clicked
     def text_input(self, label, **kwargs): return self.text_values.get(label, kwargs.get("value", ""))
+    def text_area(self, label, **kwargs): return self.text_values.get(label, kwargs.get("value", ""))
     def number_input(self, label, **kwargs): return self.text_values.get(label, kwargs.get("value", 0))
     def pills(self, label, options=None, **kwargs):
         return self.session_state.get(kwargs.get("key"), kwargs.get("default", [] if kwargs.get("selection_mode") == "multi" else None))
@@ -681,9 +682,13 @@ class SaveSyncFeedbackTests(IsolatedTest):
 
     def test_member_management_reports_local_success_when_backup_fails(self):
         self.remote.fail_get=True
+        def read_db(query,params=()):
+            conn=self.guard.connect()
+            try: return pd.read_sql_query(query,conn,params=params)
+            finally: conn.close()
         self.env.update(load_app_functions(['member_transaction','add_member','delete_member',
             'rename_member','move_member','manage_members_dialog'], **self.env,
-            db_connect=self.guard.connect,
+            db_connect=self.guard.connect,get_db=read_db,
             get_members=lambda:pd.DataFrame(self.snapshot()['members'])))
         for key,label in [(None,'新增'),('up_2','排序'),('rename_save_1','姓名'),('confirm_delete_2','刪除')]:
             self.ui.toasts.clear(); self.ui.errors.clear()

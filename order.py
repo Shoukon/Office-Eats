@@ -128,6 +128,16 @@ custom_css = """
     /* 結構化分隔線 */
     hr.soft-divider { border: 0; height: 1px; background: rgba(128,128,128,0.1); margin: 4px 0; }
     hr.person-divider { border: 0; height: 1px; background: rgba(128,128,128,0.3); margin: 16px 0; }
+
+    /* 手機版：縮小上方空白與標題，避免標題換行、頁籤擠在一起 */
+    @media (max-width: 640px) {
+        [data-testid="stMainBlockContainer"] {
+            padding-top: 3rem !important; padding-left: 1rem !important; padding-right: 1rem !important;
+        }
+        h1 { font-size: 1.7rem !important; line-height: 1.3 !important; }
+        .stTabs [data-baseweb="tab-list"] { gap: 4px; }
+        .stTabs [data-baseweb="tab"] { padding: 8px 10px; font-size: 1rem; }
+    }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -808,6 +818,16 @@ if "d_custom_manual" not in st.session_state: st.session_state["d_custom_manual"
 if "admin_logged_in" not in st.session_state: st.session_state["admin_logged_in"]=False
 if "github_sync_result" not in st.session_state: st.session_state["github_sync_result"]=None
 
+# 管理員閒置自動登出：只有完整重新執行（使用者操作）會更新活動時間，
+# 背景自動刷新的 fragment 不算活動。
+ADMIN_IDLE_SECONDS = 30 * 60
+_now_active = time.monotonic()
+if (st.session_state["admin_logged_in"]
+        and _now_active - st.session_state.get("admin_last_active", _now_active) > ADMIN_IDLE_SECONDS):
+    st.session_state["admin_logged_in"] = False
+    st.session_state["admin_timed_out"] = True
+st.session_state["admin_last_active"] = _now_active
+
 
 # ==========================================
 # 3. 管理員功能
@@ -954,7 +974,9 @@ def manage_members_dialog():
             if st.button("🗑️ 刪除這位人員",key=f"delete_member_{mid}",use_container_width=True):
                 st.session_state[f"confirm_delete_member_{mid}"]=True
             if st.session_state.get(f"confirm_delete_member_{mid}",False):
-                st.warning(f"確定要刪除「{name}」嗎？既有訂單會保留，日後新增同名人員仍可能對應這些訂單。")
+                _order_n=get_db("SELECT COUNT(*) AS n FROM orders WHERE name=?",(name,))
+                _order_n=int(_order_n.iloc[0]["n"]) if not _order_n.empty else 0
+                st.warning(f"確定要刪除「{name}」嗎？目前有 {_order_n} 筆訂單；既有訂單會保留，日後新增同名人員仍可能對應這些訂單。")
                 d1,d2=st.columns(2)
                 with d1:
                     if st.button("取消",key=f"cancel_delete_{mid}",use_container_width=True):
@@ -971,11 +993,25 @@ def manage_members_dialog():
                         else:
                             st.error(msg)
     st.divider()
-    nm=st.text_input("新增人員",key="new_member_name")
+    nm=st.text_area("新增人員",key="new_member_name",height=100,help="一行一位，可一次貼上多位。")
     if st.button("➕ 新增人員",use_container_width=True,type="primary"):
-        ok,msg=add_member(nm)
-        if ok: show_save_feedback(f"已新增人員：{nm.strip()}", save_and_sync()); st.session_state["reopen_members"]=True; st.rerun()
-        else: st.error(msg)
+        names=[]
+        for line in nm.splitlines():
+            line=line.strip()
+            if line and line not in names: names.append(line)
+        if not names:
+            st.error("姓名不能為空。")
+        else:
+            added,failed=[],[]
+            for new_name in names:
+                ok,msg=add_member(new_name)
+                (added if ok else failed).append(new_name if ok else f"{new_name}（{msg}）")
+            if added:
+                show_save_feedback(f"已新增 {len(added)} 位人員", save_and_sync())
+            if failed:
+                st.error("以下人員未新增："+"；".join(failed))
+            if added and not failed:
+                st.session_state["reopen_members"]=True; st.rerun()
     if st.button("✖️ 完成管理／關閉",key="close_members",use_container_width=True):
         st.session_state["reopen_members"]=False; st.rerun()
 
@@ -992,48 +1028,52 @@ def manage_options_dialog():
         "drink_tags":"飲料客製需求",
     }
     default_categories={"main_size","spicy","drink_size","ice","sugar"}
+    tab_main,tab_drink=st.tabs(["🍱 主餐","🥤 飲料"])
+    tab_for={"main_size":tab_main,"spicy":tab_main,"tags":tab_main,
+             "drink_size":tab_drink,"ice":tab_drink,"sugar":tab_drink,"drink_tags":tab_drink}
     for cat,label in labels.items():
-        editor_values=get_options(cat)
-        default_value=get_default_option(cat) if cat in default_categories else None
-        text=st.text_area(
-            label,
-            value="\n".join(editor_values),
-            height=110,
-            key=f"admin_opt_{cat}",
-            help="一行一個選項；可調整順序；空白行忽略，重複值自動去除。"
-        )
-        default_choice=None
-        if cat in default_categories and editor_values:
-            default_choice=st.selectbox(
-                "預設值",
-                editor_values,
-                index=(editor_values.index(default_value)
-                       if default_value in editor_values else 0),
-                key=f"admin_default_{cat}"
+        with tab_for[cat]:
+            editor_values=get_options(cat)
+            default_value=get_default_option(cat) if cat in default_categories else None
+            text=st.text_area(
+                label,
+                value="\n".join(editor_values),
+                height=110,
+                key=f"admin_opt_{cat}",
+                help="一行一個選項；可調整順序；空白行忽略，重複值自動去除。"
             )
-        if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
-            values=[v.strip() for v in text.splitlines() if v.strip()]
-            if cat in default_categories:
-                if default_choice not in values:
-                    default_choice=values[0] if values else None
-                set_options(cat,values,default_choice)
-            else:
-                # 客製需求是 multi-select，沒有預設值。
-                set_options(cat,values,None)
-            sync_ok=save_and_sync()
+            default_choice=None
+            if cat in default_categories and editor_values:
+                default_choice=st.selectbox(
+                    "預設值",
+                    editor_values,
+                    index=(editor_values.index(default_value)
+                           if default_value in editor_values else 0),
+                    key=f"admin_default_{cat}"
+                )
+            if st.button(f"💾 儲存{label}",key=f"save_opt_{cat}",use_container_width=True):
+                values=[v.strip() for v in text.splitlines() if v.strip()]
+                if cat in default_categories:
+                    if default_choice not in values:
+                        default_choice=values[0] if values else None
+                    set_options(cat,values,default_choice)
+                else:
+                    # 客製需求是 multi-select，沒有預設值。
+                    set_options(cat,values,None)
+                sync_ok=save_and_sync()
 
-            # 選項／預設值已寫入 SQLite；清除目前點餐畫面殘留的
-            # widget state，讓返回主畫面時重新採用最新 DB 預設值。
-            option_widget_keys = (
-                "m_size", "m_spicy", "d_size", "d_sugar", "d_ice",
-                "m_custom_tags", "d_custom_tags",
-            )
-            for widget_key in option_widget_keys:
-                st.session_state.pop(widget_key, None)
+                # 選項／預設值已寫入 SQLite；清除目前點餐畫面殘留的
+                # widget state，讓返回主畫面時重新採用最新 DB 預設值。
+                option_widget_keys = (
+                    "m_size", "m_spicy", "d_size", "d_sugar", "d_ice",
+                    "m_custom_tags", "d_custom_tags",
+                )
+                for widget_key in option_widget_keys:
+                    st.session_state.pop(widget_key, None)
 
-            show_save_feedback(f"{label}已更新", sync_ok)
-            st.session_state["reopen_options"]=True
-            st.rerun()
+                show_save_feedback(f"{label}已更新", sync_ok)
+                st.session_state["reopen_options"]=True
+                st.rerun()
     if st.button("✖️ 完成設定／關閉",key="close_options",use_container_width=True):
         st.session_state["reopen_options"]=False
         st.rerun()
@@ -1099,6 +1139,8 @@ with st.sidebar:
 
     st.divider(); st.subheader("🔐 管理員")
     if not st.session_state.admin_logged_in:
+        if st.session_state.pop("admin_timed_out",False):
+            st.info("⏱️ 閒置超過 30 分鐘，已自動登出管理員。")
         pw=st.text_input("管理員密碼",type="password",key="admin_pw")
         if st.button("🔑 管理員登入",use_container_width=True,type="primary"):
             admin_ok,admin_msg=verify_admin_password(pw,get_admin_password(),admin_login_throttle(),time.monotonic())
@@ -1144,45 +1186,61 @@ with st.sidebar:
         ok,msg=test_github_encryption_key()
         st.caption("🔐 encryption_key：正常" if ok else f"🔐 encryption_key：{msg}")
 
-        if st.button("🔎 唯讀核對 GitHub 備份",use_container_width=True):
+        if st.button("🔎 唯讀核對 GitHub 備份",use_container_width=True,
+                     help="只比對本機與 GitHub 的內容，不會上傳或改動任何資料。"):
             if backup_guard.check_pending(github_is_configured(),github_get_backup,retry=True):
                 st.session_state["github_sync_result"]=current_backup_result()
                 st.session_state["github_sync_error_status"]=None
             st.rerun()
 
-        if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary"):
+        if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary",
+                     help="把目前本機資料加密後上傳到 GitHub 備份。"):
             if sync_github_backup(show_error=True): st.toast("✅ 已同步到 GitHub")
             st.rerun()
 
-        st.divider(); st.subheader("💾 資料備份")
-        data=json.dumps(export_order_data(),ensure_ascii=False,indent=2).encode("utf-8")
-        st.download_button("📥 匯出點餐資料",data=data,
-                           file_name=f"office_order_backup_{taiwan_now().strftime('%Y%m%d_%H%M%S')}.json",
-                           mime="application/json",use_container_width=True)
-        uploaded=st.file_uploader("📤 匯入點餐資料",type=["json"],key="order_backup_upload")
-        if uploaded is not None:
-            st.warning("⚠️ 匯入會取代目前的人員、客製選項、店家與所有訂單。")
-            if st.button("✅ 確定匯入此備份",key="confirm_order_import",use_container_width=True):
+        st.divider()
+        with st.expander("💾 資料備份（匯出／匯入）"):
+            data=json.dumps(export_order_data(),ensure_ascii=False,indent=2).encode("utf-8")
+            st.download_button("📥 匯出點餐資料",data=data,
+                               file_name=f"office_order_backup_{taiwan_now().strftime('%Y%m%d_%H%M%S')}.json",
+                               mime="application/json",use_container_width=True)
+            st.caption("⚠️ 匯出檔未加密，內含全部人名與訂單，請妥善保管，不要分享到公開的地方。")
+            uploaded=st.file_uploader("📤 匯入點餐資料",type=["json"],key="order_backup_upload")
+            if uploaded is not None:
+                preview=None
                 try:
-                    imported=parse_backup(uploaded.getvalue())
-                    import_order_data(imported)
-                    st.session_state.pop("order_backup_upload",None)
-                    st.toast("✅ 點餐資料匯入成功，GitHub 備份已確認！")
-                    st.rerun()
-                except (BackupError,SafetyBlocked) as e:
-                    st.error(f"❌ 匯入未完成：{e}")
-                except Exception:
-                    st.error("❌ 匯入未完成；請保留原資料及安全狀態檔，重新整理後核對備份狀態。")
+                    preview=parse_backup(uploaded.getvalue())
+                except BackupError as e:
+                    st.error(f"❌ 這個檔案不能匯入：{e}")
+                if preview is not None:
+                    now_diag=get_order_db_diagnostics()
+                    st.caption(f"📄 檔案：匯出時間 {preview.get('exported_at','（舊格式，無時間）')}｜"
+                               f"人員 {len(preview['members'])} 人｜訂單 {len(preview['orders'])} 筆")
+                    st.caption(f"🗄️ 目前：人員 {now_diag['tables'].get('order_members',0)} 人｜"
+                               f"訂單 {now_diag['tables'].get('orders',0)} 筆")
+                    st.warning("⚠️ 匯入會取代目前的人員、客製選項、店家與所有訂單。")
+                    import_ack=st.checkbox("我了解匯入會取代目前所有資料",key="confirm_import_ack")
+                    if st.button("✅ 確定匯入此備份",key="confirm_order_import",use_container_width=True,
+                                 disabled=not import_ack):
+                        try:
+                            imported=parse_backup(uploaded.getvalue())
+                            import_order_data(imported)
+                            st.session_state.pop("order_backup_upload",None)
+                            st.session_state.pop("confirm_import_ack",None)
+                            st.toast("✅ 點餐資料匯入成功，GitHub 備份已確認！")
+                            st.rerun()
+                        except (BackupError,SafetyBlocked) as e:
+                            st.error(f"❌ 匯入未完成：{e}")
+                        except Exception:
+                            st.error("❌ 匯入未完成；請保留原資料及安全狀態檔，重新整理後核對備份狀態。")
 
-        st.divider(); st.subheader("🗄️ 資料庫資訊")
-        diag = get_order_db_diagnostics()
-        members_n = diag["tables"].get("order_members", 0)
-        orders_n = diag["tables"].get("orders", 0)
-        st.caption(f"名單：{members_n} 人　｜　訂單：{orders_n} 筆")
-        st.caption(f"資料庫：{DB_PATH}")
-        st.caption(f"檔案大小：{diag['size']:,} bytes")
-
-        with st.expander("🔎 資料庫診斷"):
+        with st.expander("🗄️ 資料庫資訊與診斷"):
+            diag = get_order_db_diagnostics()
+            members_n = diag["tables"].get("order_members", 0)
+            orders_n = diag["tables"].get("orders", 0)
+            st.caption(f"名單：{members_n} 人　｜　訂單：{orders_n} 筆")
+            st.caption(f"資料庫：{DB_PATH}")
+            st.caption(f"檔案大小：{diag['size']:,} bytes")
             st.caption(f"資料庫檔案存在：{'是' if diag['exists'] else '否'}")
             for table in ("order_members", "order_options", "orders", "config_shop"):
                 st.caption(f"{table}：{diag['tables'].get(table, 0)} 筆")
