@@ -60,4 +60,4 @@ jobs:
         run: >-
           python -B -m unittest -q
           test_backup_safety test_final_acceptance test_order_identity
-          test_member_order_identity test_member_rename_acceptance test_member_rename_concurrency
+          test_member_order_identity test_member_rename_acceptance test_member_rename_concurrency test_admin_login
