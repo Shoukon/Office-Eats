@@ -2,6 +2,7 @@ import streamlit as st
 import json
 from cryptography.fernet import Fernet, InvalidToken
 import base64
+import hmac
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -233,6 +234,35 @@ def get_admin_password():
         return str(st.secrets.get("admin",{}).get("password","")).strip()
     except Exception:
         return ""
+
+
+ADMIN_MAX_FAILURES = 5
+ADMIN_LOCK_SECONDS = 60
+
+
+@st.cache_resource
+def admin_login_throttle():
+    # One dict per server process, shared by all sessions, so reloading the
+    # page does not reset the failure counter.
+    return {"failures": 0, "locked_until": 0.0}
+
+
+def verify_admin_password(candidate, expected, throttle, now):
+    """Return (ok, message). Constant-time compare; lock after repeated failures."""
+    if now < throttle["locked_until"]:
+        wait = int(throttle["locked_until"] - now) + 1
+        return False, f"嘗試次數過多，請 {wait} 秒後再試。"
+    ok = bool(candidate) and bool(expected) and hmac.compare_digest(
+        str(candidate).encode("utf-8"), str(expected).encode("utf-8"))
+    if ok:
+        throttle["failures"] = 0
+        return True, ""
+    throttle["failures"] += 1
+    if throttle["failures"] >= ADMIN_MAX_FAILURES:
+        throttle["failures"] = 0
+        throttle["locked_until"] = now + ADMIN_LOCK_SECONDS
+        return False, f"❌ 管理員密碼錯誤次數過多，已鎖定 {ADMIN_LOCK_SECONDS} 秒。"
+    return False, "❌ 管理員密碼錯誤"
 
 
 def get_github_settings():
@@ -1071,8 +1101,9 @@ with st.sidebar:
     if not st.session_state.admin_logged_in:
         pw=st.text_input("管理員密碼",type="password",key="admin_pw")
         if st.button("🔑 管理員登入",use_container_width=True,type="primary"):
-            if pw and pw==get_admin_password(): st.session_state.admin_logged_in=True; st.rerun()
-            else: st.error("❌ 管理員密碼錯誤")
+            admin_ok,admin_msg=verify_admin_password(pw,get_admin_password(),admin_login_throttle(),time.monotonic())
+            if admin_ok: st.session_state.admin_logged_in=True; st.rerun()
+            else: st.error(admin_msg)
     else:
         st.success("🔓 管理員已登入")
         if st.button("👥 管理人員名單",use_container_width=True,type="primary"): manage_members_dialog()

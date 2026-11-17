@@ -1,3 +1,6 @@
-streamlit
-pandas
-cryptography
+# Pinned to the versions observed in Streamlit Cloud logs (see requirements-cloud-check.txt)
+# and covered by CI. Update both files together.
+streamlit==1.66.0
+pandas==3.0.6
+cryptography==50.0.2
+tzdata==2026.5
