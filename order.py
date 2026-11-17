@@ -1122,154 +1122,127 @@ def clear_orders_dialog(order_token):
 
 with st.sidebar:
     st.header("⚙️ 點餐管理")
-    st.subheader("今日店家")
-    db_main_shop=get_shop_name("main"); db_drink_shop=get_shop_name("drink")
-    new_main_shop=st.text_input("主餐店家",value=db_main_shop, key="shop_main_input").strip()
-    new_drink_shop=st.text_input("飲料店家",value=db_drink_shop, key="shop_drink_input").strip()
-
-    if st.button("💾 儲存今日店家", key="save_shop_names", use_container_width=True):
-        conn=None
-        shop_saved=False
-        try:
-            conn=db_connect(write=True)
-            for category,shop_name in (("main",new_main_shop),("drink",new_drink_shop)):
-                conn.execute(
-                    "INSERT INTO config_shop(category,shop_name) VALUES(?,?) "
-                    "ON CONFLICT(category) DO UPDATE SET shop_name=excluded.shop_name",
-                    (category,shop_name))
-            saved=dict(conn.execute("SELECT category,shop_name FROM config_shop"))
-            if saved.get("main") != new_main_shop or saved.get("drink") != new_drink_shop:
-                raise RuntimeError("SQLite 店家資料寫入後驗證不一致。")
-            conn.commit()
-            shop_saved=True
-        except Exception as e:
-            if conn is not None: conn.rollback()
-            st.error(f"⚠️ 今日店家儲存失敗：{e}")
-        finally:
-            if conn is not None: conn.close()
-        # Synchronization takes its own same-file lock, after the write closes.
-        if shop_saved:
-            sync_ok=save_and_sync()
-            if not sync_ok:
-                st.warning("⚠️ 店家已儲存到資料庫，但 GitHub 同步未成功，請檢查同步狀態。")
-            st.rerun()
-
     st.divider(); st.subheader("🗑️ 資料管理")
     clear_token={"generation":backup_guard.load_state()["order_generation"],"rows":(),"clear_all":True}
     if st.button("🗑️ 清空全部訂單",use_container_width=True,
                  on_click=remember_order_token,args=("clear_order_token",clear_token)):
         clear_orders_dialog(st.session_state.pop("clear_order_token",None))
 
-    st.divider(); st.subheader("🔐 管理員")
-    if not st.session_state.admin_logged_in:
-        if st.session_state.pop("admin_timed_out",False):
-            st.info("⏱️ 閒置超過 30 分鐘，已自動登出管理員。")
-        pw=st.text_input("管理員密碼",type="password",key="admin_pw")
-        if st.button("🔑 管理員登入",use_container_width=True,type="primary"):
-            admin_ok,admin_msg=verify_admin_password(pw,get_admin_password(),admin_login_throttle(),time.monotonic())
-            if admin_ok: st.session_state.admin_logged_in=True; st.rerun()
-            else: st.error(admin_msg)
-    else:
-        st.success("🔓 管理員已登入")
-        if st.button("👥 管理人員名單",use_container_width=True,type="primary"): manage_members_dialog()
-        elif st.session_state.pop("reopen_members",False): manage_members_dialog()
-        if st.button("🎨 管理主餐／飲料客製",use_container_width=True):
-            st.session_state["reopen_options"]=False
-            manage_options_dialog()
-        elif st.session_state.pop("reopen_options",False):
-            manage_options_dialog()
-        if st.button("🔒 管理員登出",use_container_width=True): st.session_state.admin_logged_in=False; st.rerun()
 
-        st.divider(); st.subheader("☁️ GitHub 永久資料")
-        result=current_backup_result()
-        # A failed current-session attempt (e.g. lock timeout) must not be
-        # concealed by a previous successful shared backup status.
-        session_result=st.session_state.get("github_sync_result")
-        if session_result and session_result[0]=="error":
-            # Keep errors tied to the status observed by that attempt; a later
-            # shared confirmation must not leave this session showing old errors.
-            if (result[0]!="success" or
-                    st.session_state.get("github_sync_error_status")==backup_guard.status()):
-                result=session_result
-            else:
-                st.session_state["github_sync_result"]=result
-        if result:
-            kind,msg=result
-            if kind == "success":
-                st.success(msg)
-            else:
-                st.error(msg)
-
-        if github_is_configured():
-            _, owner, repo, branch, path, _ = get_github_settings()
-            st.caption(f"儲存位置：{owner}/{repo}/{path}（{branch}）")
+    # 管理員區塊預設收起；登入後自動展開。登入前後使用不同標題，
+    # 確保 expanded 設定在狀態切換時一定生效。
+    st.divider()
+    _admin_in = bool(st.session_state.admin_logged_in)
+    with st.expander("🔐 管理員功能" if _admin_in else "🔐 管理員登入", expanded=_admin_in):
+        if not _admin_in:
+            if st.session_state.pop("admin_timed_out",False):
+                st.info("⏱️ 閒置超過 30 分鐘，已自動登出管理員。")
+            pw=st.text_input("管理員密碼",type="password",key="admin_pw")
+            if st.button("🔑 管理員登入",use_container_width=True,type="primary"):
+                admin_ok,admin_msg=verify_admin_password(pw,get_admin_password(),admin_login_throttle(),time.monotonic())
+                if admin_ok: st.session_state.admin_logged_in=True; st.rerun()
+                else: st.error(admin_msg)
         else:
-            st.warning("⚠️ 尚未完整設定 GitHub 備份。")
+            st.success("🔓 管理員已登入")
+            if st.button("👥 管理人員名單",use_container_width=True,type="primary"): manage_members_dialog()
+            elif st.session_state.pop("reopen_members",False): manage_members_dialog()
+            if st.button("🎨 管理主餐／飲料客製",use_container_width=True):
+                st.session_state["reopen_options"]=False
+                manage_options_dialog()
+            elif st.session_state.pop("reopen_options",False):
+                manage_options_dialog()
+            if st.button("🔒 管理員登出",use_container_width=True): st.session_state.admin_logged_in=False; st.rerun()
 
-        ok,msg=test_github_encryption_key()
-        st.caption("🔐 encryption_key：正常" if ok else f"🔐 encryption_key：{msg}")
 
-        if st.button("🔎 唯讀核對 GitHub 備份",use_container_width=True,
-                     help="只比對本機與 GitHub 的內容，不會上傳或改動任何資料。"):
-            if backup_guard.check_pending(github_is_configured(),github_get_backup,retry=True):
-                st.session_state["github_sync_result"]=current_backup_result()
-                st.session_state["github_sync_error_status"]=None
-            st.rerun()
+            tab_cloud, tab_data, tab_db = st.tabs(["☁️ 備份狀態", "💾 匯出入", "🗄️ 資料庫"])
+            with tab_cloud:
+                result=current_backup_result()
+                # A failed current-session attempt (e.g. lock timeout) must not be
+                # concealed by a previous successful shared backup status.
+                session_result=st.session_state.get("github_sync_result")
+                if session_result and session_result[0]=="error":
+                    # Keep errors tied to the status observed by that attempt; a later
+                    # shared confirmation must not leave this session showing old errors.
+                    if (result[0]!="success" or
+                            st.session_state.get("github_sync_error_status")==backup_guard.status()):
+                        result=session_result
+                    else:
+                        st.session_state["github_sync_result"]=result
+                if result:
+                    kind,msg=result
+                    if kind == "success":
+                        st.success(msg)
+                    else:
+                        st.error(msg)
 
-        if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary",
-                     help="把目前本機資料加密後上傳到 GitHub 備份。"):
-            if sync_github_backup(show_error=True): st.toast("✅ 已同步到 GitHub")
-            st.rerun()
+                if github_is_configured():
+                    _, owner, repo, branch, path, _ = get_github_settings()
+                    st.caption(f"儲存位置：{owner}/{repo}/{path}（{branch}）")
+                else:
+                    st.warning("⚠️ 尚未完整設定 GitHub 備份。")
 
-        st.divider()
-        with st.expander("💾 資料備份（匯出／匯入）"):
-            data=json.dumps(export_order_data(),ensure_ascii=False,indent=2).encode("utf-8")
-            st.download_button("📥 匯出點餐資料",data=data,
-                               file_name=f"office_order_backup_{taiwan_now().strftime('%Y%m%d_%H%M%S')}.json",
-                               mime="application/json",use_container_width=True)
-            st.caption("⚠️ 匯出檔未加密，內含全部人名與訂單，請妥善保管，不要分享到公開的地方。")
-            uploaded=st.file_uploader("📤 匯入點餐資料",type=["json"],key="order_backup_upload")
-            if uploaded is not None:
-                preview=None
-                try:
-                    preview=parse_backup(uploaded.getvalue())
-                except BackupError as e:
-                    st.error(f"❌ 這個檔案不能匯入：{e}")
-                if preview is not None:
-                    now_diag=get_order_db_diagnostics()
-                    st.caption(f"📄 檔案：匯出時間 {preview.get('exported_at','（舊格式，無時間）')}｜"
-                               f"人員 {len(preview['members'])} 人｜訂單 {len(preview['orders'])} 筆")
-                    st.caption(f"🗄️ 目前：人員 {now_diag['tables'].get('order_members',0)} 人｜"
-                               f"訂單 {now_diag['tables'].get('orders',0)} 筆")
-                    st.warning("⚠️ 匯入會取代目前的人員、客製選項、店家與所有訂單。")
-                    import_ack=st.checkbox("我了解匯入會取代目前所有資料",key="confirm_import_ack")
-                    if st.button("✅ 確定匯入此備份",key="confirm_order_import",use_container_width=True,
-                                 disabled=not import_ack):
-                        try:
-                            imported=parse_backup(uploaded.getvalue())
-                            import_order_data(imported)
-                            st.session_state.pop("order_backup_upload",None)
-                            st.session_state.pop("confirm_import_ack",None)
-                            st.toast("✅ 點餐資料匯入成功，GitHub 備份已確認！")
-                            st.rerun()
-                        except (BackupError,SafetyBlocked) as e:
-                            st.error(f"❌ 匯入未完成：{e}")
-                        except Exception:
-                            st.error("❌ 匯入未完成；請保留原資料及安全狀態檔，重新整理後核對備份狀態。")
+                ok,msg=test_github_encryption_key()
+                st.caption("🔐 encryption_key：正常" if ok else f"🔐 encryption_key：{msg}")
 
-        with st.expander("🗄️ 資料庫資訊與診斷"):
-            diag = get_order_db_diagnostics()
-            members_n = diag["tables"].get("order_members", 0)
-            orders_n = diag["tables"].get("orders", 0)
-            st.caption(f"名單：{members_n} 人　｜　訂單：{orders_n} 筆")
-            st.caption(f"資料庫：{DB_PATH}")
-            st.caption(f"檔案大小：{diag['size']:,} bytes")
-            st.caption(f"資料庫檔案存在：{'是' if diag['exists'] else '否'}")
-            for table in ("order_members", "order_options", "orders", "config_shop"):
-                st.caption(f"{table}：{diag['tables'].get(table, 0)} 筆")
-            st.caption(f"Secrets 名單：{diag['secret_members']} 人")
-            if diag.get("db_error"):
-                st.error(f"資料庫診斷失敗：{diag['db_error']}")
+                if st.button("🔎 唯讀核對 GitHub 備份",use_container_width=True,
+                             help="只比對本機與 GitHub 的內容，不會上傳或改動任何資料。"):
+                    if backup_guard.check_pending(github_is_configured(),github_get_backup,retry=True):
+                        st.session_state["github_sync_result"]=current_backup_result()
+                        st.session_state["github_sync_error_status"]=None
+                    st.rerun()
+
+                if st.button("🔄 立即同步目前資料",use_container_width=True,type="primary",
+                             help="把目前本機資料加密後上傳到 GitHub 備份。"):
+                    if sync_github_backup(show_error=True): st.toast("✅ 已同步到 GitHub")
+                    st.rerun()
+
+            with tab_data:
+                data=json.dumps(export_order_data(),ensure_ascii=False,indent=2).encode("utf-8")
+                st.download_button("📥 匯出點餐資料",data=data,
+                                   file_name=f"office_order_backup_{taiwan_now().strftime('%Y%m%d_%H%M%S')}.json",
+                                   mime="application/json",use_container_width=True)
+                st.caption("⚠️ 匯出檔未加密，內含全部人名與訂單，請妥善保管，不要分享到公開的地方。")
+                uploaded=st.file_uploader("📤 匯入點餐資料",type=["json"],key="order_backup_upload")
+                if uploaded is not None:
+                    preview=None
+                    try:
+                        preview=parse_backup(uploaded.getvalue())
+                    except BackupError as e:
+                        st.error(f"❌ 這個檔案不能匯入：{e}")
+                    if preview is not None:
+                        now_diag=get_order_db_diagnostics()
+                        st.caption(f"📄 檔案：匯出時間 {preview.get('exported_at','（舊格式，無時間）')}｜"
+                                   f"人員 {len(preview['members'])} 人｜訂單 {len(preview['orders'])} 筆")
+                        st.caption(f"🗄️ 目前：人員 {now_diag['tables'].get('order_members',0)} 人｜"
+                                   f"訂單 {now_diag['tables'].get('orders',0)} 筆")
+                        st.warning("⚠️ 匯入會取代目前的人員、客製選項、店家與所有訂單。")
+                        import_ack=st.checkbox("我了解匯入會取代目前所有資料",key="confirm_import_ack")
+                        if st.button("✅ 確定匯入此備份",key="confirm_order_import",use_container_width=True,
+                                     disabled=not import_ack):
+                            try:
+                                imported=parse_backup(uploaded.getvalue())
+                                import_order_data(imported)
+                                st.session_state.pop("order_backup_upload",None)
+                                st.session_state.pop("confirm_import_ack",None)
+                                st.toast("✅ 點餐資料匯入成功，GitHub 備份已確認！")
+                                st.rerun()
+                            except (BackupError,SafetyBlocked) as e:
+                                st.error(f"❌ 匯入未完成：{e}")
+                            except Exception:
+                                st.error("❌ 匯入未完成；請保留原資料及安全狀態檔，重新整理後核對備份狀態。")
+            with tab_db:
+                diag = get_order_db_diagnostics()
+                members_n = diag["tables"].get("order_members", 0)
+                orders_n = diag["tables"].get("orders", 0)
+                st.caption(f"名單：{members_n} 人　｜　訂單：{orders_n} 筆")
+                st.caption(f"資料庫：{DB_PATH}")
+                st.caption(f"檔案大小：{diag['size']:,} bytes")
+                st.caption(f"資料庫檔案存在：{'是' if diag['exists'] else '否'}")
+                for table in ("order_members", "order_options", "orders", "config_shop"):
+                    st.caption(f"{table}：{diag['tables'].get(table, 0)} 筆")
+                st.caption(f"Secrets 名單：{diag['secret_members']} 人")
+                if diag.get("db_error"):
+                    st.error(f"資料庫診斷失敗：{diag['db_error']}")
 
 # ==========================================
 # 4. 統計看板 (全域去框線版本，移除編號)

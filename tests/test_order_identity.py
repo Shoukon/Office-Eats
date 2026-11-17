@@ -572,7 +572,7 @@ class SaveSyncFeedbackTests(IsolatedTest):
         node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
             and isinstance(n.test,ast.Call)
             and any(k.arg=='key' and isinstance(k.value,ast.Constant)
-                    and k.value.value=='save_shop_names' for k in n.test.keywords))
+                    and k.value.value=='tab_save_shop_names' for k in n.test.keywords))
         statuses=[]; warnings=[]
         self.ui.success=statuses.append; self.ui.warning=warnings.append
         self.ui.clicked.add('💾 儲存今日店家')
@@ -585,10 +585,12 @@ class SaveSyncFeedbackTests(IsolatedTest):
                 self.remote.fail_get=failure; warnings.clear()
                 scope=dict(self.env,db_connect=self.guard.connect,
                     get_current_shop_names=read_shops,
-                    # Only the feedback contract is under test for this sidebar;
+                    save_shop_names=load_app_functions(['save_shop_names'],
+                        db_connect=self.guard.connect)['save_shop_names'],
+                    # Only the feedback contract is under test for this popover;
                     # real FakeRemote sync is exercised by the order cases.
                     save_and_sync=lambda:not failure,
-                    new_main_shop='Fake shop',new_drink_shop='Fake drinks')
+                    _new_main='Fake shop',_new_drink='Fake drinks')
                 exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),scope)
                 self.assertEqual(read_shops(),
                                  {'main':'Fake shop','drink':'Fake drinks'})
@@ -927,7 +929,7 @@ class ShopLockAcceptance(unittest.TestCase):
         node=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
             and isinstance(n.test,ast.Call)
             and any(k.arg=='key' and isinstance(k.value,ast.Constant)
-                    and k.value.value=='save_shop_names' for k in n.test.keywords))
+                    and k.value.value=='tab_save_shop_names' for k in n.test.keywords))
         self.ui.clicked.add('💾 儲存今日店家')
         self.warnings=[]; self.ui.warning=self.warnings.append
         connect=self.guard.connect
@@ -941,8 +943,10 @@ class ShopLockAcceptance(unittest.TestCase):
                 if failure=='commit': raise sqlite3.OperationalError('fake commit failure')
                 return self.conn.commit()
             def __getattr__(self,key): return getattr(self.conn,key)
-        scope=dict(self.env,db_connect=lambda write=False:FaultConnection(connect(write=write)),
-                   new_main_shop='Fake main changed',new_drink_shop='Fake drink changed')
+        faulty=lambda write=False:FaultConnection(connect(write=write))
+        scope=dict(self.env,db_connect=faulty,
+                   save_shop_names=load_app_functions(['save_shop_names'],db_connect=faulty)['save_shop_names'],
+                   _new_main='Fake main changed',_new_drink='Fake drink changed')
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),scope)
 
     def test_real_lock_released_before_successful_sync(self):
